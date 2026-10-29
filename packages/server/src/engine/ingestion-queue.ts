@@ -249,7 +249,7 @@ class IngestionQueue {
       // Get pending documents
       const documents = await prisma.$queryRaw<any[]>`
         SELECT * FROM ingestion_documents
-        WHERE job_id = ${jobId}::uuid AND status = 'PENDING'
+        WHERE job_id = ${jobId} AND status = 'PENDING'
         ORDER BY created_at ASC
       `;
 
