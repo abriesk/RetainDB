@@ -1478,7 +1478,7 @@ memoryRoutes.post(
         z.object({
           role: z.string(),
           content: z.string(),
-          timestamp: z.string().datetime(),
+          timestamp: z.string().datetime({ offset: true }),
         })
       ),
       events: z.array(z.object({
@@ -1486,7 +1486,7 @@ memoryRoutes.post(
         summary: z.string().min(1).max(1000),
         details: z.string().max(5000).optional(),
         salience: z.enum(["low", "medium", "high"]).optional(),
-        timestamp: z.string().datetime().optional(),
+        timestamp: z.string().datetime({ offset: true }).optional(),
         filePaths: z.array(z.string()).optional(),
         toolName: z.string().optional(),
         success: z.boolean().optional(),
