@@ -233,7 +233,6 @@ async function ensureSessionPersistence(params: {
     await db.message.createMany({
       data: messages.map((message) => ({
         sessionId: session.id,
-        conversationId: session.id,
         role: message.role,
         content: message.content,
         metadata: {
