@@ -8,7 +8,11 @@ FROM base AS deps
 RUN apt-get update && apt-get install -y build-essential python3 && rm -rf /var/lib/apt/lists/*
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages/server/package.json ./packages/server/package.json
-RUN pnpm install --frozen-lockfile --filter @retaindb/server...
+# node-linker=hoisted installs every package directly into node_modules (npm layout). pnpm's isolated
+# layout leaves the server's own packages under packages/server/node_modules, the image copies only
+# /app/node_modules, and .prisma/client lives in the hidden store, so the runner could not import
+# them without linking the store into node_modules first.
+RUN pnpm install --frozen-lockfile --filter @retaindb/server... --node-linker=hoisted
 
 # Build
 FROM deps AS builder
