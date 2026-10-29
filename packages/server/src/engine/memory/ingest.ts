@@ -483,7 +483,9 @@ export async function ingestSession(params: {
           }
         }
       } catch (error) {
-        result.errors.push(`Failed to process memory: ${error}`);
+        // the result.errors array is read by nobody, so log each failure to the server log
+        console.error("[ingestSession] Failed to process memory:", error);
+        result.errors.push(`Failed to process memory: ${String(error)}`);
       }
     }
 
@@ -518,7 +520,9 @@ export async function ingestSession(params: {
 
     return result;
   } catch (error) {
-    result.errors.push(`Ingestion failed: ${error}`);
+    // the result.errors array is read by nobody, so log the failure to the server log
+    console.error("[ingestSession] Ingestion failed:", error);
+    result.errors.push(`Ingestion failed: ${String(error)}`);
     return result;
   }
 }
