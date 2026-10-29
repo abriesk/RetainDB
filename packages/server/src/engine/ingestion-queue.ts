@@ -237,7 +237,7 @@ class IngestionQueue {
     try {
       // Get job details
       const jobRows = await prisma.$queryRaw<any[]>`
-        SELECT * FROM ingestion_jobs WHERE id = ${jobId}::uuid
+        SELECT * FROM ingestion_jobs WHERE id = ${jobId}
       `;
 
       if (jobRows.length === 0) {
