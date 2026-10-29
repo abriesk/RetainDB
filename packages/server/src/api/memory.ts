@@ -692,6 +692,12 @@ memoryRoutes.post(
             diagnostics = value;
           },
         });
+        // searchMemories returns bare memories; this route reads each hit as
+        // {memory, similarity, relations}, so wrap the hits into that shape
+        // before the formatter and the merge loops see them.
+        results = (results || []).map((r: any) =>
+          r && r.memory ? r : { memory: r, similarity: r.similarity ?? r.finalScore ?? 0, relations: r.relations || [], chunk: undefined }
+        );
         const shouldMergeScopedFallback = Boolean(body.user_id || body.session_id);
         if (results.length === 0 || shouldMergeScopedFallback) {
           usedLexicalFallback = true;
