@@ -4,6 +4,8 @@
 
 <h1 align="center">RetainDB</h1>
 
+> Self-hosted fixes on branch `lab`: see [LAB-FORK.md](LAB-FORK.md).
+
 <p align="center">
   Memory infrastructure for AI agents, from local coding-agent recall to hosted product memory.
 </p>
