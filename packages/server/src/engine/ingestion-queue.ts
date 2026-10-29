@@ -98,7 +98,7 @@ class IngestionQueue {
         total_documents, processed_documents, total_chunks, processed_chunks,
         webhook_url, metadata, created_at, updated_at
       ) VALUES (
-        ${jobId}::uuid, ${params.orgId}::uuid, ${params.projectId}::uuid, ${params.userId}, 'PENDING',
+        ${jobId}::uuid, ${params.orgId}, ${params.projectId}::uuid, ${params.userId}, 'PENDING',
         ${totalItems}, 0, 0, 0,
         ${params.webhookUrl || null}, ${JSON.stringify({
           chunkSize: params.chunkSize || 1000,
