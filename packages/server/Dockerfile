@@ -32,7 +32,12 @@ COPY --from=builder /app/node_modules ./node_modules
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# The hoisted install resolved by this repo's lockfile puts prisma 6.19.3 in node_modules/.bin, so
+# migrations run that bundled CLI straight from PATH - nothing is fetched, and the npx path that pulled
+# prisma 7.x (P1012: it rejects this repo's schema) is gone. checkpoint is prisma's telemetry host.
+ENV PATH="/app/node_modules/.bin:${PATH}"
+ENV CHECKPOINT_DISABLE=1
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma migrate deploy --schema=./prisma/schema.prisma && node dist/index.js"]
+CMD ["sh", "-c", "prisma migrate deploy && node dist/index.js"]
