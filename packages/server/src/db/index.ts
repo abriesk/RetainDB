@@ -36,12 +36,10 @@ export const db = globalForPrisma.prisma ?? new PrismaClient({
 });
 export const prisma = db;
 
-// Single middleware — converts BigInt to string at the DB boundary.
-// Arrays are already covered by the object branch since Array is also typeof "object".
-prisma.$use(async (params, next) => {
-  const result = await next(params);
-  return hasBigInt(result) ? convertBigIntToString(result) : result;
-});
+// BigInt results are stringified when serialized to JSON. Prisma 6.19.3 removed
+// $use, so the middleware is replaced by this equivalent effect at the JSON boundary
+// (arrays are covered automatically: JSON.stringify walks them).
+(BigInt.prototype as any).toJSON = function () { return this.toString(); };
 
 // Fast check before doing full recursive traversal
 function hasBigInt(obj: any): boolean {
