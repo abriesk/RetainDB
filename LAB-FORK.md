@@ -19,6 +19,7 @@ each one is a source commit, one defect per commit, with the reason in the commi
 | ingest-errors-logged | Two catch blocks in `ingestSession` pushed to an errors array nobody reads. They now also log to the server log |
 | build-modules | Docker: `pnpm install --node-linker=hoisted`, so the copied `node_modules` alone resolves the server's dependencies, including `.prisma/client` |
 | build-prisma | Docker: migrations run the Prisma CLI the lockfile resolves (6.19.3, on PATH). `npx` used to fetch Prisma 7, which rejects this schema (P1012). Telemetry is off |
+| hnsw-indexes | the ivfflat indexes (lists 100, built empty, probes never set) lose recall as memories grow (finding: the Margo fork's TD-001); a new migration swaps them for HNSW under the same names, idempotent. |
 
 ## Verified
 
