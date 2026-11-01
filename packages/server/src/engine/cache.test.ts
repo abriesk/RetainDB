@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { getFromSemanticCache, setInSemanticCache } from "./cache.js";
+import { getFromSemanticCache, setInSemanticCache, searchSemanticScope } from "./cache.js";
 
 const SCOPE_A = "org=default|project=P1|user=u1|scopes=[PROJECT]|topK=10|fastMode=1";
 const SCOPE_B = "org=default|project=P2|user=u1|scopes=[PROJECT]|topK=10|fastMode=1";
@@ -65,4 +65,69 @@ test("semantic cache: a near-identical embedding (>= 0.85) under scope B does no
   const sameScope = await getFromSemanticCache(nearEmbedding(), SCOPE_A);
   assert.ok(sameScope, "near-identical embedding under the same scope should hit");
   assert.equal(sameScope!.results, RESULTS_A);
+});
+
+/** The inputs searchMemories holds when it checks the semantic cache, for one project,
+ * one user, PROJECT scope, fast mode, no filters and a "today" temporal constraint.
+ * The two questions below differ ONLY in questionDate. */
+function scopeInputs(questionDate: Date) {
+  return {
+    orgId: "default",
+    projectId: "P1",
+    userId: "u1",
+    sessionId: undefined,
+    agentId: undefined,
+    taskId: undefined,
+    scopes: ["PROJECT" as const],
+    includeInactive: false,
+    memoryTypes: undefined,
+    namespace: undefined,
+    tags: undefined,
+    temporal: {
+      hasTemporalConstraint: true,
+      relative: "today" as const,
+      dateRange: {
+        start: new Date("2026-11-01T00:00:00.000Z"),
+        end: new Date("2026-11-01T23:59:59.999Z"),
+      },
+    },
+    topK: 10,
+    fastMode: true,
+    disableLatencyDegradation: false,
+    questionDate,
+  };
+}
+
+test("(d) semantic-cache scope: the question's day, not its millisecond - two searches 1s apart on one UTC day share a scope, and an entry set under one hits under the other", async () => {
+  const scopeA = searchSemanticScope(scopeInputs(new Date("2026-11-01T10:00:00.000Z")));
+  const scopeB = searchSemanticScope(scopeInputs(new Date("2026-11-01T10:00:01.000Z")));
+  assert.equal(scopeA, scopeB, "1s apart on the same UTC day must give the same scope");
+  assert.match(scopeA, /questionDate=2026-11-01\b/, "the scope holds the question's UTC day");
+  // Day precision everywhere: neither the question's time of day nor the temporal
+  // filter's 23:59:59.999 range end may appear in the scope.
+  assert.ok(!scopeA.includes("10:00"), "the scope must not carry the question's millisecond");
+  assert.ok(scopeA.includes("start:2026-11-01"), "temporal dates serialize at UTC-day precision");
+  assert.ok(!scopeA.includes("23:59:59.999"), "temporal dates serialize at UTC-day precision");
+
+  await setInSemanticCache(baseEmbedding(), scopeA, RESULTS_A);
+  const hit = await getFromSemanticCache(nearEmbedding(), scopeB);
+  assert.ok(hit, "an entry set under one of the two equal scopes must hit under the other");
+  assert.equal(hit!.results, RESULTS_A);
+  assert.ok(hit!.similarity >= 0.85, `similarity ${hit!.similarity} below threshold`);
+});
+
+test("(e) semantic-cache scope: a different UTC day is a different scope, so the entry does not hit", async () => {
+  const scopeA = searchSemanticScope(scopeInputs(new Date("2026-11-01T10:00:00.000Z")));
+  const scopeTomorrow = searchSemanticScope(scopeInputs(new Date("2026-11-02T10:00:00.000Z")));
+  assert.notEqual(scopeA, scopeTomorrow, "a different UTC day must give a different scope");
+  assert.match(scopeA, /questionDate=2026-11-01\b/);
+  assert.match(scopeTomorrow, /questionDate=2026-11-02\b/);
+
+  await setInSemanticCache(baseEmbedding(), scopeA, RESULTS_A);
+  // Sanity: the entry is there and hits its own scope...
+  const ownScope = await getFromSemanticCache(baseEmbedding(), scopeA);
+  assert.ok(ownScope, "the entry must hit its own scope");
+  // ...but the next UTC day's scope is a different scope: a miss.
+  const hit = await getFromSemanticCache(baseEmbedding(), scopeTomorrow);
+  assert.equal(hit, null);
 });

@@ -4,6 +4,7 @@
  */
 
 import crypto from "crypto";
+import type { TemporalFilter } from "./memory/types.js";
 
 // In-memory cache fallback (use Redis in production)
 const memoryCache = new Map<string, { data: any; expiry: number; accessTime: number }>();
@@ -498,6 +499,82 @@ function scopePart(value: unknown): string {
     return `{${entries.map(([k, v]) => `${k}:${scopePart(v)}`).join(",")}}`;
   }
   return String(value);
+}
+
+/** A date's UTC day, YYYY-MM-DD. */
+function utcDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/** Deep copy of a temporal filter with every Date flattened to its UTC day: two
+ * searches asked on the same day must share a cache entry even when their parsed
+ * boundaries carry a time of day (parseTemporalLocal ends ranges at 23:59:59.999). */
+function temporalAtDayPrecision(value: unknown): unknown {
+  if (value instanceof Date) return utcDay(value);
+  if (Array.isArray(value)) return value.map(temporalAtDayPrecision);
+  if (value && typeof value === "object") {
+    const flattened: Record<string, unknown> = {};
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+      flattened[key] = temporalAtDayPrecision(inner);
+    }
+    return flattened;
+  }
+  return value;
+}
+
+/** The inputs searchMemories holds when it checks the semantic cache. */
+export interface SemanticScopeInputs {
+  orgId?: string | null;
+  projectId?: string | null;
+  userId?: string | null;
+  sessionId?: string | null;
+  agentId?: string | null;
+  taskId?: string | null;
+  scopes: readonly string[];
+  includeInactive: boolean;
+  memoryTypes?: readonly string[] | null;
+  namespace?: string | null;
+  tags?: readonly string[] | null;
+  temporal?: TemporalFilter | null;
+  topK: number;
+  fastMode: boolean;
+  disableLatencyDegradation: boolean;
+  questionDate: Date;
+}
+
+/**
+ * Build the semantic-cache scope for one search from its inputs (RF semantic-cache-scope):
+ * buildSemanticScope over the search's identity - org, project, user, the session/agent/
+ * task scope targets, the applicable scopes, the filters and the result shape. The query
+ * text is deliberately NOT part of it: matching similar queries is the point of the cache.
+ * Two searches may share a cache entry only when their scope strings are equal.
+ *
+ * Times go in at day precision on purpose. The API routes default questionDate to
+ * new Date() when a request carries no question_date, so a search without one would
+ * otherwise carry its own millisecond-precise timestamp and get a scope of its own on
+ * every call - the semantic cache could never hit for it again. The scope holds the
+ * question's UTC day (YYYY-MM-DD) instead, and every Date inside the temporal filter is
+ * flattened to its UTC day too. Nothing else about the scope changes.
+ */
+export function searchSemanticScope(inputs: SemanticScopeInputs): string {
+  return buildSemanticScope({
+    orgId: inputs.orgId ?? "",
+    projectId: inputs.projectId ?? "",
+    userId: inputs.userId ?? "",
+    sessionId: inputs.sessionId ?? "",
+    agentId: inputs.agentId ?? "",
+    taskId: inputs.taskId ?? "",
+    scopes: [...inputs.scopes].sort(),
+    includeInactive: inputs.includeInactive ? 1 : 0,
+    memoryTypes: inputs.memoryTypes ? [...inputs.memoryTypes].sort() : [],
+    namespace: inputs.namespace ?? "",
+    tags: inputs.tags ? [...inputs.tags].sort() : [],
+    temporal: temporalAtDayPrecision(inputs.temporal),
+    topK: inputs.topK,
+    fastMode: inputs.fastMode ? 1 : 0,
+    disableLatencyDegradation: inputs.disableLatencyDegradation ? 1 : 0,
+    questionDate: utcDay(inputs.questionDate),
+  });
 }
 
 /**

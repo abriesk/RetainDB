@@ -15,7 +15,7 @@ import { expandMemorySearchQueries } from "../../lib/memory-normalization.js";
 import { embedSingle } from "../embeddings.js";
 import { parseTemporalFast } from "./temporal-local.js";
 import { calculateTemporalRelevance } from "./temporal.js";
-import { getFromSemanticCache, setInSemanticCache, getFromCache, setInCache, buildSemanticScope } from "../cache.js";
+import { getFromSemanticCache, setInSemanticCache, getFromCache, setInCache, searchSemanticScope } from "../cache.js";
 import type { MemoryScopeTarget, MemorySearchDiagnostics, MemorySearchParams, MemorySearchResult } from "./types.js";
 import { Prisma } from "@prisma/client";
 import { decrypt } from "../../lib/encryption.js";
@@ -249,24 +249,25 @@ export async function searchMemories(
   // the filters, plus the result shape. The query text is deliberately NOT part of it
   // (that is what the semantic cache is allowed to match on). Built per call because
   // effectiveFastMode can still flip on the latency guardrail after the cache lookup.
-  const semanticCacheScope = () => buildSemanticScope({
-    orgId: orgId ?? "",
-    projectId: projectId ?? "",
-    userId: userId ?? "",
-    sessionId: sessionId ?? "",
-    agentId: agentId ?? "",
-    taskId: taskId ?? "",
-    scopes: [...applicableScopes].sort(),
-    includeInactive: includeInactive ? 1 : 0,
-    memoryTypes: effectiveMemoryTypes ? [...effectiveMemoryTypes].sort() : [],
-    namespace: namespace ?? "",
-    tags: tags ? [...tags].sort() : [],
-    temporal,
-    topK,
-    fastMode: effectiveFastMode ? 1 : 0,
-    disableLatencyDegradation: disableLatencyDegradation ? 1 : 0,
-    questionDate,
-  });
+  const semanticCacheScope = () =>
+    searchSemanticScope({
+      orgId,
+      projectId,
+      userId,
+      sessionId,
+      agentId,
+      taskId,
+      scopes: applicableScopes,
+      includeInactive,
+      memoryTypes: effectiveMemoryTypes,
+      namespace,
+      tags,
+      temporal,
+      topK,
+      fastMode: effectiveFastMode,
+      disableLatencyDegradation,
+      questionDate,
+    });
 
   // Step 0a: Check simple cache first (before embedding!)
   const step0Start = Date.now();
