@@ -15,7 +15,7 @@ import { expandMemorySearchQueries } from "../../lib/memory-normalization.js";
 import { embedSingle } from "../embeddings.js";
 import { parseTemporalFast } from "./temporal-local.js";
 import { calculateTemporalRelevance } from "./temporal.js";
-import { getFromSemanticCache, setInSemanticCache, getFromCache, setInCache } from "../cache.js";
+import { getFromSemanticCache, setInSemanticCache, getFromCache, setInCache, buildSemanticScope } from "../cache.js";
 import type { MemoryScopeTarget, MemorySearchDiagnostics, MemorySearchParams, MemorySearchResult } from "./types.js";
 import { Prisma } from "@prisma/client";
 import { decrypt } from "../../lib/encryption.js";
@@ -239,6 +239,35 @@ export async function searchMemories(
       ? (["event"] as string[])
       : memoryTypes;
 
+  // Step 0: parse temporal constraints from the query (LOCAL - no LLM!). Done up here
+  // because the semantic-cache scope below needs the same value the lookup and the
+  // writes will use.
+  const temporal = params.temporalFilter || parseTemporalFast(query, questionDate);
+
+  // Scope for the semantic cache: every input of this search that changes which rows
+  // it may return - org, project, user, session/agent/task scope targets, scopes, and
+  // the filters, plus the result shape. The query text is deliberately NOT part of it
+  // (that is what the semantic cache is allowed to match on). Built per call because
+  // effectiveFastMode can still flip on the latency guardrail after the cache lookup.
+  const semanticCacheScope = () => buildSemanticScope({
+    orgId: orgId ?? "",
+    projectId: projectId ?? "",
+    userId: userId ?? "",
+    sessionId: sessionId ?? "",
+    agentId: agentId ?? "",
+    taskId: taskId ?? "",
+    scopes: [...applicableScopes].sort(),
+    includeInactive: includeInactive ? 1 : 0,
+    memoryTypes: effectiveMemoryTypes ? [...effectiveMemoryTypes].sort() : [],
+    namespace: namespace ?? "",
+    tags: tags ? [...tags].sort() : [],
+    temporal,
+    topK,
+    fastMode: effectiveFastMode ? 1 : 0,
+    disableLatencyDegradation: disableLatencyDegradation ? 1 : 0,
+    questionDate,
+  });
+
   // Step 0a: Check simple cache first (before embedding!)
   const step0Start = Date.now();
   const cacheKey = `search:${projectId}:${userId || ""}:${sessionId || ""}:${agentId || ""}:${taskId || ""}:${applicableScopes.join(",")}:${query}:${topK}`;
@@ -261,7 +290,7 @@ export async function searchMemories(
   timings.push({ step: "embedding", duration: Date.now() - embedStart });
 
   const semanticCacheStart = Date.now();
-  const cached = await getFromSemanticCache(queryEmbedding);
+  const cached = await getFromSemanticCache(queryEmbedding, semanticCacheScope());
   timings.push({ step: "semantic_cache_check", duration: Date.now() - semanticCacheStart });
 
   if (cached && cached.similarity >= SEMANTIC_CACHE_THRESHOLD) {
@@ -276,9 +305,8 @@ export async function searchMemories(
     return results;
   }
 
-  // Step 1: Parse temporal constraints from query (LOCAL - no LLM!)
+  // Step 1: Temporal constraints were already parsed before the cache check (above).
   const temporalStart = Date.now();
-  const temporal = params.temporalFilter || parseTemporalFast(query, questionDate);
   timings.push({ step: "temporal_parse", duration: Date.now() - temporalStart });
 
   // Step 2: Vector search on memories (NOT chunks!)
@@ -324,7 +352,7 @@ export async function searchMemories(
     const topMemories = scopedSemanticResults.slice(0, topK);
     
     // Cache good results
-    await setInSemanticCache(queryEmbedding, topMemories, 300);
+    await setInSemanticCache(queryEmbedding, semanticCacheScope(), topMemories, 300);
     await setInCache(cacheKey, topMemories, 300); // 5 min cache
     
     const total = Date.now() - startTotal;
@@ -422,7 +450,7 @@ export async function searchMemories(
 
   // Cache results for similar queries
   const cacheWriteStart = Date.now();
-  await setInSemanticCache(queryEmbedding, results, 300);
+  await setInSemanticCache(queryEmbedding, semanticCacheScope(), results, 300);
   await setInCache(cacheKey, results, 300); // 5 min cache
   timings.push({ step: "cache_write", duration: Date.now() - cacheWriteStart });
 

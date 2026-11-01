@@ -10,13 +10,22 @@ const memoryCache = new Map<string, { data: any; expiry: number; accessTime: num
 const MAX_CACHE_SIZE = 1000; // Prevent memory exhaustion
 
 // Semantic cache for vector search (stores query embeddings + results)
-const semanticCache = new Map<string, { embedding: number[]; results: any; expiry: number }>();
+/** A semantic-cache entry: the query embedding, the results computed for it, and the
+ * search scope those results belong to (org, project, user, scope targets, filters). */
+export interface SemanticCacheEntry {
+  embedding: number[];
+  results: any;
+  expiry: number;
+  scope: string;
+}
+
+const semanticCache = new Map<string, SemanticCacheEntry>();
 const MAX_SEMANTIC_CACHE_SIZE = 1000; // Increased from 500
 const SEMANTIC_THRESHOLD = 0.85; // Lowered from 0.92 for higher hit rate
 
 // Index for faster semantic lookup - bucket embeddings by quantizing to grid
 const SEMANTIC_BUCKET_SIZE = 0.1; // Bucket size for approximate nearest neighbor
-const semanticCacheIndex = new Map<string, string[]>(); // bucket key -> cache keys
+const semanticCacheIndex = new Map<string, string[]>(); // scope + bucket key -> cache keys
 
 export interface CacheConfig {
   ttl: number; // Time to live in seconds
@@ -382,6 +391,7 @@ export async function getHotMemories(params: {
  */
 export async function prewarmSemanticCache(params: {
   memories: Array<{ id: string; content: string; embedding?: number[] }>;
+  scope?: string;
 }): Promise<number> {
   const { memories } = params;
   let cached = 0;
@@ -391,8 +401,11 @@ export async function prewarmSemanticCache(params: {
     
     // Store the memory content as a "result" in semantic cache
     // This way, similar queries will hit the cache
-    const cacheKey = `sem:${crypto.createHash("md5").update(JSON.stringify(memory.embedding.slice(0, 10))).digest("hex").substring(0, 8)}`;
-    
+    const scopeDigest = crypto.createHash("md5").update(params.scope ?? "").digest("hex").substring(0, 8);
+    const embeddingDigest = crypto.createHash("md5").update(JSON.stringify(memory.embedding.slice(0, 10))).digest("hex").substring(0, 8);
+    const cacheKey = `sem:${scopeDigest}:${embeddingDigest}`;
+    const bucketKey = scopedBucketKey(params.scope ?? "", getEmbeddingBucket(memory.embedding));
+
     semanticCache.set(cacheKey, {
       embedding: memory.embedding,
       results: [{
@@ -404,7 +417,16 @@ export async function prewarmSemanticCache(params: {
         similarity: 1.0, // Perfect match for itself
       }],
       expiry: Date.now() + DEFAULT_CONFIG.ttl * 1000,
+      scope: params.scope ?? "",
     });
+
+    if (!semanticCacheIndex.has(bucketKey)) {
+      semanticCacheIndex.set(bucketKey, []);
+    }
+    const bucket = semanticCacheIndex.get(bucketKey)!;
+    if (!bucket.includes(cacheKey)) {
+      bucket.push(cacheKey);
+    }
     
     cached++;
   }
@@ -462,12 +484,54 @@ function getNeighboringBuckets(embedding: number[]): string[] {
   return neighbors;
 }
 
+/** Deterministic serialization of one scope part: Dates as ISO strings, object keys
+ * sorted, arrays in caller order (the caller sorts where the order must not matter). */
+function scopePart(value: unknown): string {
+  if (value === undefined) return "";
+  if (value === null) return "null";
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return `[${value.map(scopePart).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${k}:${scopePart(v)}`).join(",")}}`;
+  }
+  return String(value);
+}
+
+/**
+ * Build the semantic-cache scope string from every search input that changes which
+ * rows the search may return: org id, project id, user id, session/agent/task scope
+ * targets, the applicable scopes, the filters (memory types, include_inactive,
+ * namespace, tags, temporal constraint) and the result shape (topK, fast mode).
+ * Two searches may share a cache entry only when their scope strings are equal.
+ * The query text is deliberately NOT part of the scope: matching similar queries is
+ * the point of the semantic cache.
+ */
+export function buildSemanticScope(parts: Record<string, unknown>): string {
+  return Object.keys(parts)
+    .sort()
+    .map((key) => `${key}=${scopePart(parts[key])}`)
+    .join("|");
+}
+
+// Index key: scope first, embedding bucket second, so candidate collection only ever
+// pulls entries that were stored for the same scope.
+function scopedBucketKey(scope: string, bucketKey: string): string {
+  return `${scope}\u0000${bucketKey}`;
+}
+
 /**
  * Get from semantic cache using embedding similarity
- * OPTIMIZED: Uses bucket index for O(1) lookup instead of O(n) iteration
+ * OPTIMIZED: Uses bucket index for O(1) lookup instead of O(n) iteration.
+ * `scope` is the caller's buildSemanticScope() string: only an entry stored under an
+ * equal scope may be returned, so a hit never returns another project's or user's
+ * results.
  */
 export async function getFromSemanticCache(
-  queryEmbedding: number[]
+  queryEmbedding: number[],
+  scope: string
 ): Promise<{ results: any; similarity: number } | null> {
   if (!DEFAULT_CONFIG.enabled) return null;
   
@@ -478,7 +542,7 @@ export async function getFromSemanticCache(
   const neighborBuckets = getNeighboringBuckets(queryEmbedding);
   const candidateKeySet = new Set<string>();
   for (const bucket of neighborBuckets) {
-    for (const key of semanticCacheIndex.get(bucket) ?? []) {
+    for (const key of semanticCacheIndex.get(scopedBucketKey(scope, bucket)) ?? []) {
       candidateKeySet.add(key);
     }
   }
@@ -489,6 +553,9 @@ export async function getFromSemanticCache(
   for (const key of candidateKeySet) {
     const entry = semanticCache.get(key);
     if (!entry) continue;
+
+    // Entries carry their scope: only a hit computed for the same scope may be returned.
+    if (entry.scope !== scope) continue;
 
     if (entry.expiry < now) {
       semanticCache.delete(key);
@@ -518,19 +585,25 @@ export async function getFromSemanticCache(
  */
 export async function setInSemanticCache(
   queryEmbedding: number[],
+  scope: string,
   results: any,
   ttl: number = DEFAULT_CONFIG.ttl
 ): Promise<void> {
   if (!DEFAULT_CONFIG.enabled) return;
 
   const now = Date.now();
-  const bucketKey = getEmbeddingBucket(queryEmbedding);
-  const key = `sem:${crypto.createHash("md5").update(JSON.stringify(queryEmbedding.slice(0, 10))).digest("hex").substring(0, 8)}`;
+  // The scope takes part in both the cache key and the index key: the same embedding
+  // searched under a different scope is a different entry, never an overwrite.
+  const scopeDigest = crypto.createHash("md5").update(scope).digest("hex").substring(0, 8);
+  const embeddingDigest = crypto.createHash("md5").update(JSON.stringify(queryEmbedding.slice(0, 10))).digest("hex").substring(0, 8);
+  const key = `sem:${scopeDigest}:${embeddingDigest}`;
+  const bucketKey = scopedBucketKey(scope, getEmbeddingBucket(queryEmbedding));
 
   semanticCache.set(key, {
     embedding: queryEmbedding,
     results,
     expiry: now + ttl * 1000,
+    scope,
   });
   
   // Update bucket index
@@ -558,7 +631,7 @@ export async function setInSemanticCache(
       // Also remove from index
       const oldEntry = semanticCache.get(oldestKey);
       if (oldEntry) {
-        const oldBucket = getEmbeddingBucket(oldEntry.embedding);
+        const oldBucket = scopedBucketKey(oldEntry.scope, getEmbeddingBucket(oldEntry.embedding));
         const oldBucketKeys = semanticCacheIndex.get(oldBucket);
         if (oldBucketKeys) {
           const idx = oldBucketKeys.indexOf(oldestKey);

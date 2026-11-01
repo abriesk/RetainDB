@@ -1,0 +1,68 @@
+/**
+ * Unit tests for the semantic cache's scope handling (RF semantic-cache-scope).
+ *
+ * A cached entry may only be returned to a search whose scope matches the scope the
+ * entry was computed for. SCOPE_A and SCOPE_B below stand for two different projects:
+ * same org and user, different project id - the shape searchMemories builds.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { getFromSemanticCache, setInSemanticCache } from "./cache.js";
+
+const SCOPE_A = "org=default|project=P1|user=u1|scopes=[PROJECT]|topK=10|fastMode=1";
+const SCOPE_B = "org=default|project=P2|user=u1|scopes=[PROJECT]|topK=10|fastMode=1";
+
+const RESULTS_A = [{ memory: { id: "m1", content: "P1 fact", memoryType: "factual" }, similarity: 0.99 }];
+const RESULTS_B = [{ memory: { id: "m2", content: "P2 fact", memoryType: "factual" }, similarity: 0.98 }];
+
+/** Deterministic 16-dim vector (the cache buckets and hashes on the first dims). */
+function baseEmbedding(): number[] {
+  // Every value sits mid-bucket (floor(v/0.1) is 10,9,8,...,1,0 - safe from float drift).
+  return [1.0, 0.95, 0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25, 0.15, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05];
+}
+
+/** Near-identical embedding: cosine similarity ~0.98 with baseEmbedding (>= the 0.85 hit threshold). */
+function nearEmbedding(): number[] {
+  // Quantized this differs from baseEmbedding() only on dim 0 (10 -> 9), inside the
+  // bucket index neighbor range (±1 on the first 3 dims) - so without the scope check
+  // this would be a hit.
+  return [0.99, 0.96, 0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25, 0.15, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05];
+}
+
+function cosine(a: number[], b: number[]): number {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+test("semantic cache: an entry stored under scope A is not returned for scope B", async () => {
+  await setInSemanticCache(baseEmbedding(), SCOPE_A, RESULTS_A);
+  const hit = await getFromSemanticCache(baseEmbedding(), SCOPE_B);
+  assert.equal(hit, null);
+});
+
+test("semantic cache: the same entry IS returned for its own scope A", async () => {
+  await setInSemanticCache(baseEmbedding(), SCOPE_A, RESULTS_A);
+  const hit = await getFromSemanticCache(baseEmbedding(), SCOPE_A);
+  assert.ok(hit, "expected a hit for scope A");
+  assert.equal(hit!.results, RESULTS_A);
+  assert.ok(hit!.similarity >= 0.85, `similarity ${hit!.similarity} below threshold`);
+});
+
+test("semantic cache: a near-identical embedding (>= 0.85) under scope B does not hit scope A's entry", async () => {
+  const similarity = cosine(nearEmbedding(), baseEmbedding());
+  assert.ok(similarity >= 0.85, `test vectors must be above the hit threshold, got ${similarity}`);
+  await setInSemanticCache(baseEmbedding(), SCOPE_A, RESULTS_A);
+  const hit = await getFromSemanticCache(nearEmbedding(), SCOPE_B);
+  assert.equal(hit, null);
+  // Sanity check: without the scope difference this near-identical embedding DOES hit.
+  const sameScope = await getFromSemanticCache(nearEmbedding(), SCOPE_A);
+  assert.ok(sameScope, "near-identical embedding under the same scope should hit");
+  assert.equal(sameScope!.results, RESULTS_A);
+});
