@@ -3,9 +3,10 @@
  * Handles large file uploads asynchronously with webhook notifications
  */
 
-import { prisma } from "../db/index.js";
+import * as dbIndex from "../db/index.js";
+const prisma = (dbIndex as any).prisma;
 import { ingestDocument } from "./ingest.js";
-import { ingestSession } from "./memory/index.js";
+import * as memoryIndex from "./memory/index.js";
 import { writeMemoryCanonical } from "./memory/write.js";
 import { withRetryableWriteRetries } from "./memory/write-reliability.js";
 
@@ -348,6 +349,7 @@ class IngestionQueue {
   }
 
   private async processDocument(job: any, doc: any) {
+    const prisma = (globalThis as any).__PRISMA_MOCK__ ?? (dbIndex as any).prisma;
     try {
       const metadata = typeof doc.metadata === 'string' ? JSON.parse(doc.metadata) : doc.metadata;
       const jobMetadata = typeof job.metadata === 'string' ? JSON.parse(job.metadata) : job.metadata;
@@ -436,7 +438,7 @@ class IngestionQueue {
             }))
           : [];
 
-        await ingestSession({
+        const ingestResult = await ((globalThis as any).__INGEST_SESSION_STUB__ || memoryIndex.ingestSession)({
           sessionId: metadata.session_id || `session_${doc.id}`,
           projectId: job.project_id,
           orgId: job.org_id,
@@ -447,6 +449,24 @@ class IngestionQueue {
           promotionMode: metadata.promotion_mode,
           messages: messages,
         });
+
+        const hasErrors = Array.isArray(ingestResult?.errors) && ingestResult.errors.length > 0;
+        const storedSomething = Number(ingestResult?.memoriesCreated || 0) > 0;
+
+        if (hasErrors && !storedSomething) {
+          const firstError = String(ingestResult.errors[0]);
+          await prisma.$executeRaw`
+            UPDATE ingestion_documents
+            SET status = 'FAILED', error = ${firstError}, updated_at = NOW()
+            WHERE id = ${doc.id}
+          `;
+          console.error(`[IngestionQueue] Document ${doc.id} failed: ${firstError}`);
+          return { success: false, error: firstError };
+        }
+
+        if (hasErrors) {
+          console.error(`[IngestionQueue] Document ${doc.id} completed with errors: ${ingestResult.errors.join("; ")}`);
+        }
 
         // Update document status
         await prisma.$executeRaw`
@@ -603,3 +623,4 @@ class IngestionQueue {
 }
 
 export const ingestionQueue = new IngestionQueue();
+

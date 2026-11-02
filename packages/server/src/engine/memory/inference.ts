@@ -289,7 +289,9 @@ export async function extractImplicitMemories(
 
   } catch (err: any) {
     console.error("[inference] extractImplicitMemories failed:", err?.message || err);
-    return [];
+    // Surface extraction failures to callers instead of silently returning no
+    // memories, so session ingestion can mark the ingest failed.
+    throw err;
   }
 }
 

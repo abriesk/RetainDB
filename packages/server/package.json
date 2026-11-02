@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
   "test:cache": "tsx --test src/engine/cache.test.ts",
+  "test:ingest": "tsx --test src/engine/ingestion-queue.test.ts",
+  "test": "tsx --test src/engine/*.test.ts",
     "build": "tsup src/index.ts --format esm --out-dir dist --dts",
     "typecheck": "tsc --noEmit",
     "db:generate": "prisma generate",
