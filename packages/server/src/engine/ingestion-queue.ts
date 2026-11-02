@@ -306,7 +306,7 @@ class IngestionQueue {
       // Overall job outcome from every document result across all batches
       const outcome = documentOutcome(settled, documents.length);
 
-      if (outcome.failed === documents.length) {
+      if (outcome.allFailed) {
         // Every document failed: the catch below marks the job FAILED, records
         // this error, and emits the single ingestion.failed webhook.
         throw new Error(outcome.firstError ?? "All documents failed");
@@ -652,13 +652,15 @@ class IngestionQueue {
 /**
  * Summarise the outcome of every document processed for a job.
  * A rejected Promise.allSettled result or an explicit { success: false }
- * both count as a failed document. Returns how many failed and the first
- * failure's error text, so the caller can FAIL the job or COMPLETED-with-error.
+ * both count as a failed document. Returns how many failed, whether every
+ * document failed (allFailed — only when there was at least one), and the
+ * first failure's error text, so the caller can FAIL the job or
+ * COMPLETED-with-error.
  */
 export function documentOutcome(
   settled: Array<PromiseSettledResult<{ success: boolean; error?: string }>>,
   total: number,
-): { failed: number; firstError: string | undefined } {
+): { failed: number; firstError: string | undefined; allFailed: boolean } {
   let failed = 0;
   let firstError: string | undefined;
   for (const r of settled) {
@@ -676,7 +678,7 @@ export function documentOutcome(
       }
     }
   }
-  return { failed, firstError };
+  return { failed, firstError, allFailed: total > 0 && failed === total };
 }
 
 export const ingestionQueue = new IngestionQueue();

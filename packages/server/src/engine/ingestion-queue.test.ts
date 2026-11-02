@@ -27,6 +27,9 @@ let ingestionQueue: any;
 let documentOutcome: any;
 before(async () => {
   process.env.DATABASE_URL = process.env.DATABASE_URL || "postgresql://u:p@localhost:5432/x";
+  // engine/extractor.ts builds its client at import; these keep the test offline.
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test";
+  process.env.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "http://127.0.0.1:1";
   const qMod: any = await import("./ingestion-queue.js");
   ingestionQueue = qMod.ingestionQueue;
   documentOutcome = qMod.documentOutcome;
@@ -114,6 +117,13 @@ test("documentOutcome: a rejected allSettled result counts as a failed document"
   const o = documentOutcome(settled, 2);
   assert.equal(o.failed, 1);
   assert.equal(o.firstError, "rejected boom");
+});
+
+test("documentOutcome: a job with no documents is not a failed job", () => {
+  const o = documentOutcome([], 0);
+  assert.equal(o.failed, 0);
+  assert.equal(o.firstError, undefined);
+  assert.equal(o.allFailed, false);
 });
 
 // ── (e) extractImplicitMemories against a dead model endpoint ─────────────
