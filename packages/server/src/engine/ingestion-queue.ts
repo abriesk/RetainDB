@@ -3,10 +3,9 @@
  * Handles large file uploads asynchronously with webhook notifications
  */
 
-import * as dbIndex from "../db/index.js";
-const prisma = (dbIndex as any).prisma;
+import { prisma } from "../db/index.js";
 import { ingestDocument } from "./ingest.js";
-import * as memoryIndex from "./memory/index.js";
+import { ingestSession } from "./memory/index.js";
 import { writeMemoryCanonical } from "./memory/write.js";
 import { withRetryableWriteRetries } from "./memory/write-reliability.js";
 
@@ -270,6 +269,7 @@ class IngestionQueue {
       });
 
       // Process documents in parallel batches
+      const settled: Array<PromiseSettledResult<{ success: boolean; error?: string }>> = [];
       const batchSize = this.maxConcurrent;
       for (let i = 0; i < documents.length; i += batchSize) {
         const batch = documents.slice(i, i + batchSize);
@@ -282,6 +282,7 @@ class IngestionQueue {
             console.error(`[IngestionQueue] Batch document failed:`, r.reason);
           }
         }
+        settled.push(...batchResults);
 
         // Update progress
         const progress = Math.min(i + batchSize, documents.length);
@@ -302,17 +303,38 @@ class IngestionQueue {
         });
       }
 
+      // Overall job outcome from every document result across all batches
+      const outcome = documentOutcome(settled, documents.length);
+
+      if (outcome.failed === documents.length) {
+        // Every document failed: the catch below marks the job FAILED, records
+        // this error, and emits the single ingestion.failed webhook.
+        throw new Error(outcome.firstError ?? "All documents failed");
+      }
+
       // Get final chunk count
       const chunkCounts = await prisma.$queryRaw<any[]>`
         SELECT total_chunks, processed_chunks FROM ingestion_jobs WHERE id = ${jobId}
       `;
 
+      const jobError = outcome.failed > 0
+        ? `${outcome.failed} of ${documents.length} documents failed: ${outcome.firstError}`
+        : undefined;
+
       // Mark job as completed
-      await prisma.$executeRaw`
-        UPDATE ingestion_jobs
-        SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
-        WHERE id = ${jobId}
-      `;
+      if (jobError) {
+        await prisma.$executeRaw`
+          UPDATE ingestion_jobs
+          SET status = 'COMPLETED', error = ${jobError}, completed_at = NOW(), updated_at = NOW()
+          WHERE id = ${jobId}
+        `;
+      } else {
+        await prisma.$executeRaw`
+          UPDATE ingestion_jobs
+          SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
+          WHERE id = ${jobId}
+        `;
+      }
 
       // Send completion webhook
       await this.sendWebhook(job.webhook_url, {
@@ -348,8 +370,13 @@ class IngestionQueue {
     }
   }
 
-  private async processDocument(job: any, doc: any) {
-    const prisma = (globalThis as any).__PRISMA_MOCK__ ?? (dbIndex as any).prisma;
+  private async processDocument(
+    job: any,
+    doc: any,
+    deps: { prisma: typeof prisma; ingestSession: typeof ingestSession } = { prisma, ingestSession },
+  ) {
+    const prisma = deps.prisma;
+    const ingestSession = deps.ingestSession;
     try {
       const metadata = typeof doc.metadata === 'string' ? JSON.parse(doc.metadata) : doc.metadata;
       const jobMetadata = typeof job.metadata === 'string' ? JSON.parse(job.metadata) : job.metadata;
@@ -409,7 +436,7 @@ class IngestionQueue {
             SET status = 'FAILED', error = ${`memory dropped: ${writeResult.validatorIssues.join(", ")}`}, updated_at = NOW()
             WHERE id = ${doc.id}
           `;
-          return { success: false };
+          return { success: false, error: `memory dropped: ${writeResult.validatorIssues.join(", ")}` };
         }
 
         // Update document status
@@ -438,7 +465,7 @@ class IngestionQueue {
             }))
           : [];
 
-        const ingestResult = await ((globalThis as any).__INGEST_SESSION_STUB__ || memoryIndex.ingestSession)({
+        const ingestResult = await ingestSession({
           sessionId: metadata.session_id || `session_${doc.id}`,
           projectId: job.project_id,
           orgId: job.org_id,
@@ -622,5 +649,34 @@ class IngestionQueue {
   }
 }
 
-export const ingestionQueue = new IngestionQueue();
+/**
+ * Summarise the outcome of every document processed for a job.
+ * A rejected Promise.allSettled result or an explicit { success: false }
+ * both count as a failed document. Returns how many failed and the first
+ * failure's error text, so the caller can FAIL the job or COMPLETED-with-error.
+ */
+export function documentOutcome(
+  settled: Array<PromiseSettledResult<{ success: boolean; error?: string }>>,
+  total: number,
+): { failed: number; firstError: string | undefined } {
+  let failed = 0;
+  let firstError: string | undefined;
+  for (const r of settled) {
+    if (r.status === "rejected") {
+      failed++;
+      if (firstError === undefined) {
+        firstError = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      }
+      continue;
+    }
+    if (!r.value || r.value.success === false) {
+      failed++;
+      if (firstError === undefined && r.value?.error !== undefined) {
+        firstError = String(r.value.error);
+      }
+    }
+  }
+  return { failed, firstError };
+}
 
+export const ingestionQueue = new IngestionQueue();

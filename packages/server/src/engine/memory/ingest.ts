@@ -350,6 +350,9 @@ export async function ingestSession(params: {
       {
         enablePattern: true,
         enableInference: true,
+        onInferenceError: (err: unknown) => {
+          result.errors.push(`Extraction failed: ${String(err)}`);
+        },
         tieredEscalation: Boolean(
           tenantPolicy?.orchestrator_v2_enabled && tenantPolicy?.tiered_escalation_enabled
         ),

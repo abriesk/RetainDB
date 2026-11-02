@@ -246,6 +246,7 @@ export async function extractImplicitMemories(
     model?: string;
     minConfidence?: number;
     sourceRole?: MemorySourceRole;
+    onError?: (err: unknown) => void,
   },
 ): Promise<ExtractedMemory[]> {
   if (!message.trim() || message.trim().length < 8) return [];
@@ -289,9 +290,10 @@ export async function extractImplicitMemories(
 
   } catch (err: any) {
     console.error("[inference] extractImplicitMemories failed:", err?.message || err);
-    // Surface extraction failures to callers instead of silently returning no
-    // memories, so session ingestion can mark the ingest failed.
-    throw err;
+    // Hand the failure to the caller's onError (when given) and resolve empty:
+    // one failed model call must not discard memories already extracted.
+    options?.onError?.(err);
+    return [];
   }
 }
 

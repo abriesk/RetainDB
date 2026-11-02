@@ -32,6 +32,7 @@ export async function extractMemories(
     tieredEscalation?: boolean;
     escalationModel?: string;
     sourceRole?: MemorySourceRole;
+    onInferenceError?: (err: unknown) => void;
   } = {}
 ): Promise<ExtractionResult> {
   const startTime = Date.now();
@@ -84,6 +85,7 @@ export async function extractMemories(
     const inferredMemories = await extractImplicitMemories(message, context, {
       minConfidence,
       sourceRole: options.sourceRole,
+      onError: options.onInferenceError,
     });
     implicit.push(...inferredMemories.filter((memory) => memory.confidence >= minConfidence));
 
@@ -100,6 +102,7 @@ export async function extractMemories(
         model: options.escalationModel || "gpt-5.4-mini",
         minConfidence,
         sourceRole: options.sourceRole,
+        onError: options.onInferenceError,
       });
       if (strongerMemories.length > 0) {
         implicit.push(...strongerMemories.map((memory) => ({

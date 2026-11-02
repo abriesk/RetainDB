@@ -1,5 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
+import { extractImplicitMemories } from "./memory/inference.js";
+import { extractMemories as extractMemoriesUnified } from "./memory/extractor-unified.js";
 
 const prismaCalls: any[] = [];
 const prismaMock = {
@@ -22,21 +24,33 @@ const ingestState: { result: any } = {
 };
 
 let ingestionQueue: any;
+let documentOutcome: any;
 before(async () => {
-  process.env.DATABASE_URL = process.env.DATABASE_URL || "postgresql://x:x@localhost:5432/x";
-  (globalThis as any).__PRISMA_MOCK__ = prismaMock;
-  (globalThis as any).__INGEST_SESSION_STUB__ = async () => ingestState.result;
-  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "test";
-  process.env.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "http://127.0.0.1:1";
-  const dbMod: any = await import("../db/index.js");
-  dbMod.prisma = prismaMock;
-
-  const memMod: any = await import("./memory/index.js");
-  memMod.ingestSession = async () => ingestState.result;
-
+  process.env.DATABASE_URL = process.env.DATABASE_URL || "postgresql://u:p@localhost:5432/x";
   const qMod: any = await import("./ingestion-queue.js");
   ingestionQueue = qMod.ingestionQueue;
+  documentOutcome = qMod.documentOutcome;
 });
+
+// The mocks go in as deps, so no global hooks are needed.
+const DEPS = () => ({
+  prisma: prismaMock,
+  ingestSession: async () => ingestState.result,
+});
+
+// Point the inference model at a dead port for the duration of the callback.
+async function withDeadModelEndpoint(fn: () => Promise<void>) {
+  const prevUrl = process.env.OPENAI_BASE_URL;
+  const prevKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_BASE_URL = "http://127.0.0.1:1";
+  process.env.OPENAI_API_KEY = prevKey || "test";
+  try {
+    await fn();
+  } finally {
+    if (prevUrl === undefined) delete process.env.OPENAI_BASE_URL; else process.env.OPENAI_BASE_URL = prevUrl;
+    if (prevKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = prevKey;
+  }
+}
 
 const JOB = { id: "job-1", project_id: "proj-1", org_id: "org-1", metadata: {} };
 const DOC = {
@@ -59,6 +73,92 @@ function makeResult(overrides: any) {
   };
 }
 
+// ── (d) documentOutcome ───────────────────────────────────────────────────
+
+test("documentOutcome: all documents failed reports the first error", () => {
+  const settled = [
+    { status: "fulfilled", value: { success: false, error: "first failed" } },
+    { status: "fulfilled", value: { success: false, error: "second failed" } },
+  ];
+  const o = documentOutcome(settled, 2);
+  assert.equal(o.failed, 2);
+  assert.equal(o.firstError, "first failed");
+});
+
+test("documentOutcome: some documents failed counts them and keeps the first error", () => {
+  const settled = [
+    { status: "fulfilled", value: { success: true } },
+    { status: "fulfilled", value: { success: false, error: "third failed" } },
+    { status: "fulfilled", value: { success: true } },
+  ];
+  const o = documentOutcome(settled, 3);
+  assert.equal(o.failed, 1);
+  assert.equal(o.firstError, "third failed");
+});
+
+test("documentOutcome: none failed reports zero and no error", () => {
+  const settled = [
+    { status: "fulfilled", value: { success: true } },
+    { status: "fulfilled", value: { success: true } },
+  ];
+  const o = documentOutcome(settled, 2);
+  assert.equal(o.failed, 0);
+  assert.equal(o.firstError, undefined);
+});
+
+test("documentOutcome: a rejected allSettled result counts as a failed document", () => {
+  const settled = [
+    { status: "rejected", reason: new Error("rejected boom") },
+    { status: "fulfilled", value: { success: true } },
+  ];
+  const o = documentOutcome(settled, 2);
+  assert.equal(o.failed, 1);
+  assert.equal(o.firstError, "rejected boom");
+});
+
+// ── (e) extractImplicitMemories against a dead model endpoint ─────────────
+
+test("extractImplicitMemories: a dead endpoint resolves [] and calls onError once", async () => {
+  await withDeadModelEndpoint(async () => {
+    let calls = 0;
+    const res = await extractImplicitMemories(
+      "the weather is quite pleasant today, nothing explicit here",
+      "",
+      { onError: () => { calls++; } },
+    );
+    assert.deepEqual(res, []);
+    assert.equal(calls, 1);
+  });
+});
+
+test("extractImplicitMemories: a dead endpoint with no onError resolves [] and does not throw", async () => {
+  await withDeadModelEndpoint(async () => {
+    const res = await extractImplicitMemories(
+      "the weather is quite pleasant today, nothing explicit here",
+      "",
+    );
+    assert.deepEqual(res, []);
+  });
+});
+
+// ── (f) extractMemories keeps the pattern match, fires onInferenceError ───
+
+test("extractMemories: a pattern match survives a dead endpoint and onInferenceError fires", async () => {
+  await withDeadModelEndpoint(async () => {
+    let inferred = 0;
+    const result = await extractMemoriesUnified(
+      "I live in San Francisco, by the way",
+      "",
+      { onInferenceError: () => { inferred++; } },
+    );
+    assert.ok(result.explicit.length >= 1);
+    assert.ok(result.all.some(m => /lives in San Francisco/i.test(m.content)));
+    assert.equal(inferred, 1);
+  });
+});
+
+// ── the three existing ingest-errors-fail cases, now passing deps ─────────
+
 test("ingest-errors-fail: extraction errors with nothing stored marks the document FAILED", async () => {
   ingestState.result = makeResult({ memoriesCreated: 0, errors: ["boom: model refused"] });
   prismaCalls.length = 0;
@@ -67,7 +167,7 @@ test("ingest-errors-fail: extraction errors with nothing stored marks the docume
   console.error = (...args: any[]) => { errors.push(args); };
   let r: any;
   try {
-    r = await ingestionQueue.processDocument(JOB, DOC);
+    r = await ingestionQueue.processDocument(JOB, DOC, DEPS());
   } finally {
     console.error = orig;
   }
@@ -87,7 +187,7 @@ test("ingest-errors-fail: no errors marks the document COMPLETED as before", asy
   console.error = (...args: any[]) => { errors.push(args); };
   let r: any;
   try {
-    r = await ingestionQueue.processDocument(JOB, DOC);
+    r = await ingestionQueue.processDocument(JOB, DOC, DEPS());
   } finally {
     console.error = orig;
   }
@@ -105,7 +205,7 @@ test("ingest-errors-fail: partial success stays COMPLETED and logs once with the
   console.error = (...args: any[]) => { errors.push(args); };
   let r: any;
   try {
-    r = await ingestionQueue.processDocument(JOB, DOC);
+    r = await ingestionQueue.processDocument(JOB, DOC, DEPS());
   } finally {
     console.error = orig;
   }
