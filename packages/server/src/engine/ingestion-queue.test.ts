@@ -86,6 +86,7 @@ test("documentOutcome: all documents failed reports the first error", () => {
   const o = documentOutcome(settled, 2);
   assert.equal(o.failed, 2);
   assert.equal(o.firstError, "first failed");
+  assert.equal(o.allFailed, true);
 });
 
 test("documentOutcome: some documents failed counts them and keeps the first error", () => {
@@ -97,6 +98,7 @@ test("documentOutcome: some documents failed counts them and keeps the first err
   const o = documentOutcome(settled, 3);
   assert.equal(o.failed, 1);
   assert.equal(o.firstError, "third failed");
+  assert.equal(o.allFailed, false);
 });
 
 test("documentOutcome: none failed reports zero and no error", () => {
@@ -107,6 +109,7 @@ test("documentOutcome: none failed reports zero and no error", () => {
   const o = documentOutcome(settled, 2);
   assert.equal(o.failed, 0);
   assert.equal(o.firstError, undefined);
+  assert.equal(o.allFailed, false);
 });
 
 test("documentOutcome: a rejected allSettled result counts as a failed document", () => {
@@ -117,6 +120,7 @@ test("documentOutcome: a rejected allSettled result counts as a failed document"
   const o = documentOutcome(settled, 2);
   assert.equal(o.failed, 1);
   assert.equal(o.firstError, "rejected boom");
+  assert.equal(o.allFailed, false);
 });
 
 test("documentOutcome: a job with no documents is not a failed job", () => {
@@ -209,6 +213,26 @@ test("ingest-errors-fail: no errors marks the document COMPLETED as before", asy
 
 test("ingest-errors-fail: partial success stays COMPLETED and logs once with the document id", async () => {
   ingestState.result = makeResult({ memoriesCreated: 1, errors: ["one write failed"] });
+  prismaCalls.length = 0;
+  const errors: any[] = [];
+  const orig = console.error;
+  console.error = (...args: any[]) => { errors.push(args); };
+  let r: any;
+  try {
+    r = await ingestionQueue.processDocument(JOB, DOC, DEPS());
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(r.success, true);
+  const joined = prismaCalls.map((c) => JSON.stringify(c)).join("\n");
+  assert.match(joined, /COMPLETED/);
+  assert.match(joined, /processed_chunks/);
+  assert.equal(errors.length, 1);
+  assert.match(JSON.stringify(errors[0]), /doc-1/);
+});
+
+test("ingest-errors-fail: a merged or duplicate write counts as stored", async () => {
+  ingestState.result = makeResult({ memoriesCreated: 0, scopesTouched: ["SESSION"], errors: ["Extraction failed: x"] });
   prismaCalls.length = 0;
   const errors: any[] = [];
   const orig = console.error;

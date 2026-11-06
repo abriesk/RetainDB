@@ -478,7 +478,8 @@ class IngestionQueue {
         });
 
         const hasErrors = Array.isArray(ingestResult?.errors) && ingestResult.errors.length > 0;
-        const storedSomething = Number(ingestResult?.memoriesCreated || 0) > 0;
+        const storedSomething = Number(ingestResult?.memoriesCreated || 0) > 0 ||
+          (ingestResult?.scopesTouched?.length ?? 0) > 0;
 
         if (hasErrors && !storedSomething) {
           const firstError = String(ingestResult.errors[0]);
