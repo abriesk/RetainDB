@@ -1,4 +1,3 @@
-import { clearAfterMemoriesInvalidated } from "./cache";
 /**
  * Unit tests for the semantic cache's scope handling (RF semantic-cache-scope).
  *
@@ -13,7 +12,7 @@ import {
   setInSemanticCache,
   getFromCache,
   setInCache,
-  clearAfterMemoryWrite, clearSearchCaches,
+  clearAfterMemoryWrite, clearAfterMemoriesInvalidated, clearSearchCaches,
   searchSemanticScope,
   searchSimpleCacheKey,
 } from "./cache.js";
@@ -413,6 +412,46 @@ test("(t) clearAfterMemoriesInvalidated on an empty list changes nothing", async
   await setInSemanticCache(baseEmbedding(), scopeP1U1, RESULTS_A);
 
   await clearAfterMemoriesInvalidated([]);
+
+  assert.ok(await getFromCache(p1u1Simple), "the simple entry survives");
+  assert.ok(await getFromSemanticCache(baseEmbedding(), scopeP1U1), "the semantic entry survives");
+});
+
+
+test("(u) clearAfterMemoriesInvalidated on a DOCUMENT-scope memory clears the whole project", async () => {
+  const day = new Date("2026-11-03T09:00:00.000Z");
+  const scopeP1U2 = searchSemanticScope({ ...scopeInputs(day), projectId: "P1", userId: "u2" });
+  const p1u2Simple = simpleEntry("P1", "u2", scopeP1U2);
+  await setInCache(p1u2Simple, RESULTS_A);
+  await setInSemanticCache(baseEmbedding(), scopeP1U2, RESULTS_A);
+
+  await clearAfterMemoriesInvalidated([{ projectId: "P1", scope: "DOCUMENT", userId: "u1" }]);
+
+  assert.equal(await getFromCache(p1u2Simple), null, "another user's simple entry goes with a DOCUMENT-scope invalidated memory");
+  assert.equal(await getFromSemanticCache(baseEmbedding(), scopeP1U2), null, "another user's semantic entry goes with a DOCUMENT-scope invalidated memory");
+});
+
+test("(v) clearAfterMemoryWrite on an AGENT-scope memory clears the whole project", async () => {
+  const day = new Date("2026-11-03T10:00:00.000Z");
+  const scopeP1U2 = searchSemanticScope({ ...scopeInputs(day), projectId: "P1", userId: "u2" });
+  const p1u2Simple = simpleEntry("P1", "u2", scopeP1U2);
+  await setInCache(p1u2Simple, RESULTS_A);
+  await setInSemanticCache(baseEmbedding(), scopeP1U2, RESULTS_A);
+
+  await clearAfterMemoryWrite({ projectId: "P1", scope: "AGENT" }, "u1");
+
+  assert.equal(await getFromCache(p1u2Simple), null, "another user's simple entry goes with an AGENT-scope write");
+  assert.equal(await getFromSemanticCache(baseEmbedding(), scopeP1U2), null, "another user's semantic entry goes with an AGENT-scope write");
+});
+
+test("(w) clearAfterMemoriesInvalidated skips a memory with no projectId", async () => {
+  const day = new Date("2026-11-03T11:00:00.000Z");
+  const scopeP1U1 = searchSemanticScope({ ...scopeInputs(day), projectId: "P1", userId: "u1" });
+  const p1u1Simple = simpleEntry("P1", "u1", scopeP1U1);
+  await setInCache(p1u1Simple, RESULTS_A);
+  await setInSemanticCache(baseEmbedding(), scopeP1U1, RESULTS_A);
+
+  await clearAfterMemoriesInvalidated([{ projectId: null, scope: "USER", userId: "u1" }]);
 
   assert.ok(await getFromCache(p1u1Simple), "the simple entry survives");
   assert.ok(await getFromSemanticCache(baseEmbedding(), scopeP1U1), "the semantic entry survives");

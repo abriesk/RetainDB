@@ -307,19 +307,21 @@ export async function clearSearchCaches(projectId: string, userId?: string): Pro
 
 /**
  * Clear the search caches a write to this memory made stale, by the memory's own scope
- * (RF search-cache-clear): a PROJECT-scope memory is shown to every user of the
- * project, so the whole project's caches go; any other scope clears only the writing
- * user's entries. A cache error is logged and never fails the write.
+ * (RF search-cache-clear): only a USER-scope memory is private to its own user, so any
+ * other scope - PROJECT, SESSION, AGENT, TASK, DOCUMENT, or none - is shown to users
+ * beyond the writer and clears the whole project's caches; a USER-scope memory clears
+ * only that user's entries. A cache error is logged and never fails the write.
  */
 export async function clearAfterMemoryWrite(
-  memory: { projectId: string; scope?: string | null },
+  memory: { projectId: string | null; scope?: string | null },
   userId?: string | null
 ): Promise<void> {
   try {
-    if (memory.scope === "PROJECT") {
-      await clearSearchCaches(memory.projectId);
+    if (!memory.projectId) return;
+    if (memory.scope === "USER" && userId) {
+      await clearSearchCaches(memory.projectId, userId);
     } else {
-      await clearSearchCaches(memory.projectId, userId || undefined);
+      await clearSearchCaches(memory.projectId);
     }
   } catch (error) {
     console.warn("[MemoryWrite] Search cache clear failed (non-critical):", error);
@@ -328,27 +330,29 @@ export async function clearAfterMemoryWrite(
 
 /**
  * Clear the search caches made stale when a write invalidates existing memories
- * (RF search-cache-clear): each invalidated memory is cleared by its OWN scope, since a
- * PROJECT-scope memory is shown to every user of the project and so clears it project-wide,
- * while any other scope clears only that memory's own user. A cache error is logged and
- * never fails the write.
+ * (RF search-cache-clear): each invalidated memory is cleared by its OWN scope, since
+ * only a USER-scope memory is private to its own user - any other scope, PROJECT,
+ * SESSION, AGENT, TASK, DOCUMENT or none, is shown to users beyond that memory's own
+ * user and so clears the whole project's caches. A cache error is logged and never
+ * fails the write.
  */
 export async function clearAfterMemoriesInvalidated(
-  memories: Array<{ projectId: string; scope?: string | null; userId?: string | null }>
+  memories: Array<{ projectId: string | null; scope?: string | null; userId?: string | null }>
 ): Promise<void> {
   try {
     const cleared = new Set<string>();
     for (const memory of memories) {
+      if (!memory.projectId) continue;
       const key =
-        memory.scope === "PROJECT"
-          ? `project:${memory.projectId}`
-          : `user:${memory.projectId}:${memory.userId || ""}`;
+        memory.scope === "USER" && memory.userId
+          ? `user:${memory.projectId}:${memory.userId}`
+          : `project:${memory.projectId}`;
       if (cleared.has(key)) continue;
       cleared.add(key);
-      if (memory.scope === "PROJECT") {
-        await clearSearchCaches(memory.projectId);
+      if (memory.scope === "USER" && memory.userId) {
+        await clearSearchCaches(memory.projectId, memory.userId);
       } else {
-        await clearSearchCaches(memory.projectId, memory.userId || undefined);
+        await clearSearchCaches(memory.projectId);
       }
     }
   } catch (error) {

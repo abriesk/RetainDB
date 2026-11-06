@@ -5,12 +5,11 @@ import { mergeMemoryNormalizationMetadata } from "../../lib/memory-normalization
 import { addPendingOverlayEntry } from "../pending-overlay.js";
 import { enqueueMemoryEmbeddingJob } from "../queue.js";
 import { getRedisClient } from "../cache.js";
-import { clearAfterMemoryWrite, clearSearchCaches } from "../cache.js";
+import { clearAfterMemoryWrite, clearAfterMemoriesInvalidated, clearSearchCaches } from "../cache.js";
 import { embedSingle } from "../embeddings.js";
 import { detectRelations, shouldInvalidateMemory } from "./relations.js";
 import type { MemoryScopeTarget, MemorySourceRole, MemoryType, PromotionMode } from "./types.js";
 import { encrypt, decrypt } from "../../lib/encryption.js";
-import { clearAfterMemoriesInvalidated } from "../cache";
 
 export const MEMORY_WRITE_POLICY_VERSION = "memory_write_v2";
 export const USER_PROFILE_THRESHOLD = 0.82;
@@ -773,7 +772,7 @@ async function embedMemoryInline(id: string, text: string): Promise<void> {
   }
 }
 
-async function postPersistActions(memory: { id: string; content: string; projectId: string; scope?: string | null }, input: CanonicalMemoryWriteInput) {
+async function postPersistActions(memory: { id: string; content: string; projectId: string | null; scope?: string | null }, input: CanonicalMemoryWriteInput) {
   // Always use plaintext for embedding — input.content is guaranteed plaintext
   const plaintextContent = decrypt(memory.content, input.orgId);
   const embeddingText = String(buildNormalizedMetadata(input, plaintextContent).search_text || plaintextContent);
@@ -1014,7 +1013,7 @@ export async function writeMemoryCanonical(input: CanonicalMemoryWriteInput): Pr
   );
 
   let invalidatedCount = 0;
-  const invalidatedMemories: Array<{ projectId: string; scope?: string | null; userId?: string | null }> = [];
+  const invalidatedMemories: Array<{ projectId: string | null; scope?: string | null; userId?: string | null }> = [];
   for (const relation of relations) {
     await db.memoryRelation.create({
       data: {
