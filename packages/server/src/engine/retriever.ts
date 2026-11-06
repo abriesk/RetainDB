@@ -198,6 +198,9 @@ export async function retrieve(opts: QueryOptions): Promise<ContextResponse> {
   const timing: NonNullable<ContextResponse["meta"]["timing"]> = {};
   const cacheParams = {
     query,
+    userId,
+    sessionId,
+    agentId,
     topK,
     threshold,
     chunkTypes,
