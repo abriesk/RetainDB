@@ -10,6 +10,7 @@ import { embedSingle } from "../embeddings.js";
 import { detectRelations, shouldInvalidateMemory } from "./relations.js";
 import type { MemoryScopeTarget, MemorySourceRole, MemoryType, PromotionMode } from "./types.js";
 import { encrypt, decrypt } from "../../lib/encryption.js";
+import { clearAfterMemoriesInvalidated } from "../cache";
 
 export const MEMORY_WRITE_POLICY_VERSION = "memory_write_v2";
 export const USER_PROFILE_THRESHOLD = 0.82;
@@ -1013,6 +1014,7 @@ export async function writeMemoryCanonical(input: CanonicalMemoryWriteInput): Pr
   );
 
   let invalidatedCount = 0;
+  const invalidatedMemories: Array<{ projectId: string; scope?: string | null; userId?: string | null }> = [];
   for (const relation of relations) {
     await db.memoryRelation.create({
       data: {
@@ -1029,16 +1031,22 @@ export async function writeMemoryCanonical(input: CanonicalMemoryWriteInput): Pr
     });
 
     if (shouldInvalidateMemory(relation.relationType) && canInvalidateExistingMemory(effectiveInput)) {
-      await db.memory.update({
+      const invalidatedMemory = await db.memory.update({
         where: { id: relation.toMemoryId },
         data: {
           validUntil: new Date(),
           supersededBy: created.id,
           isActive: false,
         },
+        select: { projectId: true, scope: true, userId: true },
       });
+      invalidatedMemories.push(invalidatedMemory);
       invalidatedCount += 1;
     }
+  }
+
+  if (invalidatedMemories.length > 0) {
+    await clearAfterMemoriesInvalidated(invalidatedMemories);
   }
 
   await postPersistActions(created, effectiveInput);

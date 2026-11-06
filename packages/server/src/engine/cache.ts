@@ -327,6 +327,36 @@ export async function clearAfterMemoryWrite(
 }
 
 /**
+ * Clear the search caches made stale when a write invalidates existing memories
+ * (RF search-cache-clear): each invalidated memory is cleared by its OWN scope, since a
+ * PROJECT-scope memory is shown to every user of the project and so clears it project-wide,
+ * while any other scope clears only that memory's own user. A cache error is logged and
+ * never fails the write.
+ */
+export async function clearAfterMemoriesInvalidated(
+  memories: Array<{ projectId: string; scope?: string | null; userId?: string | null }>
+): Promise<void> {
+  try {
+    const cleared = new Set<string>();
+    for (const memory of memories) {
+      const key =
+        memory.scope === "PROJECT"
+          ? `project:${memory.projectId}`
+          : `user:${memory.projectId}:${memory.userId || ""}`;
+      if (cleared.has(key)) continue;
+      cleared.add(key);
+      if (memory.scope === "PROJECT") {
+        await clearSearchCaches(memory.projectId);
+      } else {
+        await clearSearchCaches(memory.projectId, memory.userId || undefined);
+      }
+    }
+  } catch (error) {
+    console.warn("[MemoryWrite] Search cache clear failed (non-critical):", error);
+  }
+}
+
+/**
  * Cache decorator for functions
  */
 export function cached<T extends (...args: any[]) => Promise<any>>(
