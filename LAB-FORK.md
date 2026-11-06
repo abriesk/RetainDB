@@ -23,6 +23,7 @@ each one is a source commit, one defect per commit, with the reason in the commi
 | hnsw-search-settings | searches filter by project and user in the same query as the vector ordering, and HNSW hands it only 40 candidates by default, so a small project or user in a big table came back thin or empty; a new migration sets hnsw.ef_search 100 and, on pgvector 0.8+, hnsw.iterative_scan strict_order for the database. |
 | semantic-cache-scope | the semantic search cache matched by embedding only, so for 5 minutes a similar query from another project or user got their results; entries now carry the search's scope. |
 | ingest-errors-fail | an ingest job read COMPLETED although its session extraction failed: the model call's error was swallowed and the result's errors were never read. The error now reaches ingestSession's result, a document with nothing stored is FAILED, and a job whose documents all failed is FAILED with the first error (some failed: COMPLETED, with the count and the first error in the job's error field). |
+| search-cache-filters | a degraded balanced or quality search was stored under a scope its later lookups never matched; a comma in a tag could imitate two tags; and the simple cache ignored most filters, so the same text with other filters got the earlier results for 5 minutes. One scope is now built per search, values are quoted, and the simple key carries the scope behind the prefix that writes clear. |
 
 ## Verified
 
