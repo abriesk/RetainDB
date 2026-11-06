@@ -689,24 +689,26 @@ model Webhook {
 }
 
 model WebhookDelivery {
-  id          String   @id @default(uuid())
-  webhookId   String
-  event       String
-  eventId     String?
-  action      String?
-  attempt     Int      @default(1)
-  durationMs  Int?
-  payload     Json     @default("{}")
-  statusCode  Int?
-  success     Boolean  @default(false)
-  error       String?
-  traceId     String?
-  deliveredAt DateTime?
-  attemptedAt DateTime @default(now())
-  createdAt   DateTime @default(now())
-
-  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  id            String   @id @default(uuid())
+  webhookId     String
+  event         String
+  payload       Json
+  statusCode    Int?
+  responseBody  String?
+  errorMessage  String?
+  deliveredAt   DateTime @default(now())
+  eventId       String?
+  action        String   @default("deliver")
+  attempt       Int      @default(1)
+  durationMs    Int?
+  errorCode     String?
+  traceId       String?
+  parentTraceId String?
+  webhook       Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
 
   @@index([webhookId])
+  @@index([event])
+  @@index([deliveredAt])
+  @@index([eventId])
   @@map("webhook_deliveries")
 }
