@@ -262,10 +262,9 @@ export async function clearCacheByPattern(pattern: string): Promise<number> {
  *
  * With a userId, only that user's own entries go: the simple entries under
  * `search:<projectId>:<userId>:` and the semantic entries whose scope carries that
- * project and that user. Whether a clear may reach past the writing user is not decided
- * here: the caller (clearAfterMemoryWrite) passes the memory's scope, and a
- * PROJECT-scope memory is shown to every user of the project, so that write clears the
- * whole project.
+ * project and that user. Whether a clear may reach past the writing user is decided by
+ * the callers (clearAfterMemoryWrite, clearAfterMemoriesInvalidated): only a USER-scope
+ * memory is private to its user; any other scope clears the whole project.
  *
  * With no userId, the whole project goes - every user's simple entries under
  * `search:<projectId>:` and every semantic entry of that project - because a project
