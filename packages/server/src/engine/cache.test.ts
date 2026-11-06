@@ -7,7 +7,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { getFromSemanticCache, setInSemanticCache, searchSemanticScope, searchSimpleCacheKey } from "./cache.js";
+import {
+  getFromSemanticCache,
+  setInSemanticCache,
+  getFromCache,
+  setInCache,
+  clearSearchCaches,
+  searchSemanticScope,
+  searchSimpleCacheKey,
+} from "./cache.js";
 
 const SCOPE_A = "org=default|project=P1|user=u1|scopes=[PROJECT]|topK=10|fastMode=1";
 const SCOPE_B = "org=default|project=P2|user=u1|scopes=[PROJECT]|topK=10|fastMode=1";
@@ -157,7 +165,7 @@ test("(g) semantic-cache scope: one set of inputs gives one string, and two call
   assert.notEqual(scopeA, tomorrow, "the next UTC day is a different scope (case (e))");
 });
 
-test("(h) simple-cache key: it starts with exactly search:<projectId>:<userId>:, the prefix write.ts clears", () => {
+test("(h) simple-cache key: the key prefix, then exactly search:<projectId>:<userId>: - what a write now clears", () => {
   const scope = searchSemanticScope(scopeInputs(new Date("2026-11-01T10:00:00.000Z")));
   const inputs = {
     projectId: "P1",
@@ -170,10 +178,14 @@ test("(h) simple-cache key: it starts with exactly search:<projectId>:<userId>:,
     topK: 10,
   };
   const key = searchSimpleCacheKey(inputs, scope);
-  assert.equal(key.slice(0, "search:P1:u1:".length), "search:P1:u1:", "the prefix write.ts's clearCacheByPattern matches must hold");
+  assert.equal(
+    key.slice(0, "whisper:context:search:P1:u1:".length),
+    "whisper:context:search:P1:u1:",
+    "the key prefix plus search:<projectId>:<userId>: is the prefix clearSearchCaches matches"
+  );
   assert.ok(key.endsWith(`:${scope}`), "today's key, in today's order, with the scope appended");
   const noUser = searchSimpleCacheKey({ projectId: "P1", scopes: [], query: "q", topK: 10 }, "s");
-  assert.ok(noUser.startsWith("search:P1::"), "a missing userId keeps today's empty part");
+  assert.ok(noUser.startsWith("whisper:context:search:P1::"), "a missing userId keeps today's empty part");
 });
 
 test("(i) simple-cache key: keys differing only in tags, namespace, memory types, include_inactive or the temporal filter are different keys", () => {
@@ -196,4 +208,107 @@ test("(i) simple-cache key: keys differing only in tags, namespace, memory types
     },
   };
   assert.notEqual(keyFor({ temporal: yesterday }), plain, "a different temporal filter is a different key");
+});
+
+/** One simple-cache key for a search of this project and user (RF search-cache-clear). */
+function simpleEntry(projectId: string, userId: string, scope: string): string {
+  return searchSimpleCacheKey(
+    {
+      projectId,
+      userId,
+      sessionId: undefined,
+      agentId: undefined,
+      taskId: undefined,
+      scopes: ["PROJECT"],
+      query: "qpd",
+      topK: 10,
+    },
+    scope
+  );
+}
+
+test("(j) simple cache: clearSearchCaches removes the writing user's entry, and another user's survives [pin]", async () => {
+  const day = new Date("2026-11-01T10:00:00.000Z");
+  const mine = simpleEntry("P1", "u1", searchSemanticScope(scopeInputs(day)));
+  const theirs = simpleEntry("P1", "u2", searchSemanticScope({ ...scopeInputs(day), userId: "u2" }));
+  await setInCache(mine, RESULTS_A);
+  await setInCache(theirs, RESULTS_B);
+  assert.ok(await getFromCache(mine), "the entry is there before the write");
+
+  await clearSearchCaches("P1", "u1");
+
+  assert.equal(await getFromCache(mine), null, "a write by u1 must clear u1's simple search entry");
+  assert.ok(await getFromCache(theirs), "another user's entry survives the write");
+});
+
+test("(k) semantic cache: clearSearchCaches removes the project+user scope's entry; another user's and another project's survive [pin]", async () => {
+  const day = new Date("2026-11-01T10:00:00.000Z");
+  const scopeP1U1 = searchSemanticScope(scopeInputs(day));
+  const scopeP1U2 = searchSemanticScope({ ...scopeInputs(day), userId: "u2" });
+  const scopeP2U1 = searchSemanticScope({ ...scopeInputs(day), projectId: "P2" });
+  await setInSemanticCache(baseEmbedding(), scopeP1U1, RESULTS_A);
+  await setInSemanticCache(baseEmbedding(), scopeP1U2, RESULTS_B);
+  await setInSemanticCache(baseEmbedding(), scopeP2U1, RESULTS_B);
+  assert.ok(await getFromSemanticCache(baseEmbedding(), scopeP1U1), "the entry is there before the write");
+
+  await clearSearchCaches("P1", "u1");
+
+  assert.equal(await getFromSemanticCache(baseEmbedding(), scopeP1U1), null, "a write by u1 in P1 must clear P1/u1's semantic entry");
+  assert.ok(await getFromSemanticCache(baseEmbedding(), scopeP1U2), "another user's semantic entry survives");
+  assert.ok(await getFromSemanticCache(baseEmbedding(), scopeP2U1), "another project's semantic entry survives");
+});
+
+test("(l) a project-wide write (no userId) clears every user's entries of that project, and no other project's", async () => {
+  const day = new Date("2026-11-01T10:00:00.000Z");
+  const scopeP3U1 = searchSemanticScope({ ...scopeInputs(day), projectId: "P3" });
+  const scopeP3U2 = searchSemanticScope({ ...scopeInputs(day), projectId: "P3", userId: "u2" });
+  const scopeP4U1 = searchSemanticScope({ ...scopeInputs(day), projectId: "P4" });
+  const p3u1Simple = simpleEntry("P3", "u1", scopeP3U1);
+  const p3u2Simple = simpleEntry("P3", "u2", scopeP3U2);
+  const p4u1Simple = simpleEntry("P4", "u1", scopeP4U1);
+  await setInCache(p3u1Simple, RESULTS_A);
+  await setInCache(p3u2Simple, RESULTS_B);
+  await setInCache(p4u1Simple, RESULTS_B);
+  await setInSemanticCache(baseEmbedding(), scopeP3U1, RESULTS_A);
+  await setInSemanticCache(baseEmbedding(), scopeP3U2, RESULTS_B);
+  await setInSemanticCache(baseEmbedding(), scopeP4U1, RESULTS_B);
+
+  await clearSearchCaches("P3");
+
+  assert.equal(await getFromCache(p3u1Simple), null, "one user's simple entry of the project goes");
+  assert.equal(await getFromCache(p3u2Simple), null, "every user's simple entry of the project goes");
+  assert.ok(await getFromCache(p4u1Simple), "another project's simple entry survives");
+  assert.equal(await getFromSemanticCache(baseEmbedding(), scopeP3U1), null, "one user's semantic entry of the project goes");
+  assert.equal(await getFromSemanticCache(baseEmbedding(), scopeP3U2), null, "every user's semantic entry of the project goes");
+  assert.ok(await getFromSemanticCache(baseEmbedding(), scopeP4U1), "another project's semantic entry survives");
+});
+
+test("(m) a userId holding `.` or `+` clears only its own entries", async () => {
+  const day = new Date("2026-11-01T10:00:00.000Z");
+  // `+`: as a regex, `u+1:` also matches `u1:` - unescaped it would clear another user.
+  const plusScope = searchSemanticScope({ ...scopeInputs(day), projectId: "P5", userId: "u+1" });
+  const plusSiblingScope = searchSemanticScope({ ...scopeInputs(day), projectId: "P5", userId: "u1" });
+  // `.`: as a regex, `u.1:` also matches `u-1:` - unescaped it would clear another user.
+  const dotScope = searchSemanticScope({ ...scopeInputs(day), projectId: "P6", userId: "u.1" });
+  const dotSiblingScope = searchSemanticScope({ ...scopeInputs(day), projectId: "P6", userId: "u-1" });
+  const plus = simpleEntry("P5", "u+1", plusScope);
+  const plusSibling = simpleEntry("P5", "u1", plusSiblingScope);
+  const dot = simpleEntry("P6", "u.1", dotScope);
+  const dotSibling = simpleEntry("P6", "u-1", dotSiblingScope);
+  await setInCache(plus, RESULTS_A);
+  await setInCache(plusSibling, RESULTS_B);
+  await setInCache(dot, RESULTS_A);
+  await setInCache(dotSibling, RESULTS_B);
+  await setInSemanticCache(baseEmbedding(), plusScope, RESULTS_A);
+  await setInSemanticCache(baseEmbedding(), plusSiblingScope, RESULTS_B);
+
+  await clearSearchCaches("P5", "u+1");
+  await clearSearchCaches("P6", "u.1");
+
+  assert.equal(await getFromCache(plus), null, "u+1's own simple entry is cleared");
+  assert.ok(await getFromCache(plusSibling), "u+1 must not match u1: the clear's pattern is escaped");
+  assert.equal(await getFromCache(dot), null, "u.1's own simple entry is cleared");
+  assert.ok(await getFromCache(dotSibling), "u.1 must not match u-1: the clear's pattern is escaped");
+  assert.equal(await getFromSemanticCache(baseEmbedding(), plusScope), null, "u+1's own semantic entry is cleared");
+  assert.ok(await getFromSemanticCache(baseEmbedding(), plusSiblingScope), "u1's semantic entry survives");
 });

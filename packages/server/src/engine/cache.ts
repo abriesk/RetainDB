@@ -211,6 +211,15 @@ export async function deleteFromCache(key: string): Promise<void> {
 }
 
 /**
+ * Escape a literal for use inside a RegExp (RF search-cache-clear): a project or user id
+ * may hold regex characters (`.` or `+`), and matching it literally must not turn into
+ * a pattern that also matches another id.
+ */
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * Clear cache by pattern
  */
 export async function clearCacheByPattern(pattern: string): Promise<number> {
@@ -223,7 +232,13 @@ export async function clearCacheByPattern(pattern: string): Promise<number> {
       return keys.length;
     } else {
       let count = 0;
-      const regex = new RegExp(`^${DEFAULT_CONFIG.keyPrefix}${pattern}`);
+      // The pattern is a literal prefix, not a regular expression: escape its regex
+      // characters, while a trailing `*` keeps its old meaning of "anything".
+      const wildcard = pattern.endsWith("*");
+      const literal = wildcard ? pattern.slice(0, -1) : pattern;
+      const regex = new RegExp(
+        `^${DEFAULT_CONFIG.keyPrefix}${escapeRegExpLiteral(literal)}${wildcard ? ".*" : ""}`
+      );
       for (const key of memoryCache.keys()) {
         if (regex.test(key)) {
           memoryCache.delete(key);
@@ -235,6 +250,53 @@ export async function clearCacheByPattern(pattern: string): Promise<number> {
   } catch (error) {
     console.error("Cache clear error:", error);
     return 0;
+  }
+}
+
+/**
+ * Clear both search caches of everything a write to this project just made stale
+ * (RF search-cache-clear): the simple (exact-match) entries and the semantic entries,
+ * because neither cache was cleared by a write before - a search kept its old answer,
+ * first from the simple cache and then from the semantic one, for up to five minutes
+ * after the stored memory had already changed.
+ *
+ * With a userId, only that user's own entries go: the simple entries under
+ * `search:<projectId>:<userId>:` and the semantic entries whose scope carries that
+ * project and that user. It stays user-only on purpose, even for a memory other users
+ * can also see (a project-scope write arrives with the writing user's id): this is the
+ * write's own user, and widening the clear past that is not this function's call to
+ * make.
+ *
+ * With no userId, the whole project goes - every user's simple entries under
+ * `search:<projectId>:` and every semantic entry of that project - because a project
+ * memory is visible to every user.
+ *
+ * A semantic entry carries its scope, whose values are JSON-quoted, so the project and
+ * the user match exactly as `projectId="..."` and `userId="..."`: a P1 project never
+ * matches a P10 one.
+ */
+export async function clearSearchCaches(projectId: string, userId?: string): Promise<void> {
+  // Simple cache: one prefix clear takes every entry of that search shape. Without a
+  // userId the pattern stops at the project, so every user's entries go with it.
+  await clearCacheByPattern(
+    userId ? `search:${projectId}:${userId}:` : `search:${projectId}:`
+  );
+
+  // Semantic cache: it lives in this process, so walk the entries' own scopes.
+  const projectPart = `projectId=${JSON.stringify(projectId)}`;
+  const userPart = userId ? `userId=${JSON.stringify(userId)}` : null;
+  for (const [key, entry] of [...semanticCache.entries()]) {
+    if (!entry.scope.includes(projectPart)) continue;
+    if (userPart && !entry.scope.includes(userPart)) continue;
+    semanticCache.delete(key);
+    // Keep the bucket index from pointing at the removed entry.
+    const bucketKey = scopedBucketKey(entry.scope, getEmbeddingBucket(entry.embedding));
+    const bucketKeys = semanticCacheIndex.get(bucketKey);
+    if (bucketKeys) {
+      const idx = bucketKeys.indexOf(key);
+      if (idx > -1) bucketKeys.splice(idx, 1);
+      if (bucketKeys.length === 0) semanticCacheIndex.delete(bucketKey);
+    }
   }
 }
 
@@ -586,8 +648,10 @@ export function searchSemanticScope(inputs: SemanticScopeInputs): string {
  * the inputs of today's key, in today's order, with `:` + the search's semantic-cache
  * scope appended, so the filters that scope carries (memory types, namespace, tags,
  * include_inactive, the temporal constraint, the fast mode) now also separate simple
- * cache entries. The key still starts with exactly `search:<projectId>:<userId>:`, the
- * prefix engine/memory/write.ts clears with clearCacheByPattern after a write. */
+ * cache entries. The key now starts with the cache's key prefix followed by exactly
+ * `search:<projectId>:<userId>:` - the prefix engine/memory/write.ts clears after a
+ * write (RF search-cache-clear: that clear used to look for the key without the prefix,
+ * so it never matched anything). */
 export function searchSimpleCacheKey(
   inputs: {
     projectId: string;
@@ -601,7 +665,7 @@ export function searchSimpleCacheKey(
   },
   scope: string,
 ): string {
-  return `search:${inputs.projectId}:${inputs.userId || ""}:${inputs.sessionId || ""}:${inputs.agentId || ""}:${inputs.taskId || ""}:${inputs.scopes.join(",")}:${inputs.query}:${inputs.topK}:${scope}`;
+  return `${DEFAULT_CONFIG.keyPrefix}search:${inputs.projectId}:${inputs.userId || ""}:${inputs.sessionId || ""}:${inputs.agentId || ""}:${inputs.taskId || ""}:${inputs.scopes.join(",")}:${inputs.query}:${inputs.topK}:${scope}`;
 }
 
 /**

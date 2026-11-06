@@ -5,7 +5,7 @@ import { mergeMemoryNormalizationMetadata } from "../../lib/memory-normalization
 import { addPendingOverlayEntry } from "../pending-overlay.js";
 import { enqueueMemoryEmbeddingJob } from "../queue.js";
 import { getRedisClient } from "../cache.js";
-import { clearCacheByPattern } from "../cache.js";
+import { clearSearchCaches } from "../cache.js";
 import { embedSingle } from "../embeddings.js";
 import { detectRelations, shouldInvalidateMemory } from "./relations.js";
 import type { MemoryScopeTarget, MemorySourceRole, MemoryType, PromotionMode } from "./types.js";
@@ -790,9 +790,12 @@ async function postPersistActions(memory: { id: string; content: string }, input
     await embedMemoryInline(memory.id, embeddingText);
   }
 
-  // Invalidate simple search cache so updated memories surface immediately
-  if (input.userId) {
-    clearCacheByPattern(`search:${input.projectId}:${input.userId}:`).catch(() => {});
+  // Invalidate both search caches so the updated memory surfaces immediately (RF
+  // search-cache-clear). A cache error is logged and never fails the write.
+  try {
+    await clearSearchCaches(input.projectId, input.userId);
+  } catch (error) {
+    console.warn("[MemoryWrite] Search cache clear failed (non-critical):", error);
   }
 
   if (input.publishPendingOverlay === false) return;
@@ -973,6 +976,14 @@ export async function writeMemoryCanonical(input: CanonicalMemoryWriteInput): Pr
       scopeDecision,
       scopeTarget
     );
+    // The merge changes the stored text, so every cached answer that could have come
+    // from it is stale (RF search-cache-clear). A cache error is logged and never
+    // fails the write.
+    try {
+      await clearSearchCaches(effectiveInput.projectId, effectiveInput.userId);
+    } catch (error) {
+      console.warn("[MemoryWrite] Search cache clear failed (non-critical):", error);
+    }
     return {
       outcome: "merged",
       memory: toPersistedShape(merged),
