@@ -13,6 +13,7 @@ import {
   getTenantExtractionPolicy,
 } from "../extraction-observability.js";
 import { writeMemoryCanonical } from "./write.js";
+import { clearAfterMemoryWrite } from "../cache.js";
 
 export interface IngestionResult {
   memoriesCreated: number;
@@ -775,6 +776,10 @@ export async function updateMemory(params: {
       supersededBy: writeResult.memory.id,
     },
   });
+
+  // The old version is invalid from here on, but a search in this gap would have
+  // cached the superseded memory - clear it right away (RF search-cache-clear).
+  await clearAfterMemoryWrite(oldMemory, oldMemory.userId);
 
   // Create update relation
   await db.memoryRelation.create({

@@ -30,6 +30,7 @@ import { fireWebhookEvent } from "../engine/webhooks.js";
 import { embedSingle } from "../engine/embeddings.js";
 import { ingestSession as ingestMemorySession, searchMemories } from "../engine/memory/index.js";
 import { writeMemoryCanonical } from "../engine/memory/write.js";
+import { clearAfterMemoryWrite } from "../engine/cache.js";
 import { nanoid } from "nanoid";
 import { createHash } from "crypto";
 import { memoryRoutes } from "./memory.js";
@@ -2872,6 +2873,8 @@ api.put(
       data: updateData,
     });
 
+    await clearAfterMemoryWrite(memory, memory.userId);
+
     return c.json(updated);
   }
 );
@@ -2893,6 +2896,8 @@ api.delete("/v1/memories/:id", async (c) => {
     where: { id },
     data: { isActive: false, updatedAt: new Date() },
   });
+
+  await clearAfterMemoryWrite(memory, memory.userId);
 
   return c.json({ deleted: true });
 });

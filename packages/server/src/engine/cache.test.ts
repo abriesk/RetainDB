@@ -12,7 +12,7 @@ import {
   setInSemanticCache,
   getFromCache,
   setInCache,
-  clearSearchCaches,
+  clearAfterMemoryWrite, clearSearchCaches,
   searchSemanticScope,
   searchSimpleCacheKey,
 } from "./cache.js";
@@ -311,4 +311,54 @@ test("(m) a userId holding `.` or `+` clears only its own entries", async () => 
   assert.ok(await getFromCache(dotSibling), "u.1 must not match u-1: the clear's pattern is escaped");
   assert.equal(await getFromSemanticCache(baseEmbedding(), plusScope), null, "u+1's own semantic entry is cleared");
   assert.ok(await getFromSemanticCache(baseEmbedding(), plusSiblingScope), "u1's semantic entry survives");
+});
+
+test("(n) the retriever's context entries go by project, never by user", async () => {
+  const p1Context = "whisper:context:query:P1:x";
+  const p2Context = "whisper:context:query:P2:x";
+  await setInCache(p1Context, RESULTS_A);
+  await setInCache(p2Context, RESULTS_A);
+
+  await clearSearchCaches("P1", "u1");
+
+  assert.equal(await getFromCache(p1Context), null, "the cleared project's context entry goes");
+  assert.ok(await getFromCache(p2Context), "another project's context entry survives");
+});
+
+test("(o) clearAfterMemoryWrite on a PROJECT memory clears every user's entries", async () => {
+  const day = new Date("2026-11-01T10:00:00.000Z");
+  const scopeP1U1 = searchSemanticScope({ ...scopeInputs(day), projectId: "P1", userId: "u1" });
+  const scopeP1U2 = searchSemanticScope({ ...scopeInputs(day), projectId: "P1", userId: "u2" });
+  const p1u1Simple = simpleEntry("P1", "u1", scopeP1U1);
+  const p1u2Simple = simpleEntry("P1", "u2", scopeP1U2);
+  await setInCache(p1u1Simple, RESULTS_A);
+  await setInCache(p1u2Simple, RESULTS_B);
+  await setInSemanticCache(baseEmbedding(), scopeP1U1, RESULTS_A);
+  await setInSemanticCache(baseEmbedding(), scopeP1U2, RESULTS_B);
+
+  await clearAfterMemoryWrite({ projectId: "P1", scope: "PROJECT" }, "u1");
+
+  assert.equal(await getFromCache(p1u1Simple), null, "the writing user's simple entry goes");
+  assert.equal(await getFromCache(p1u2Simple), null, "another user's simple entry of the project goes");
+  assert.equal(await getFromSemanticCache(baseEmbedding(), scopeP1U1), null, "the writing user's semantic entry goes");
+  assert.equal(await getFromSemanticCache(baseEmbedding(), scopeP1U2), null, "another user's semantic entry of the project goes");
+});
+
+test("(p) clearAfterMemoryWrite on a USER memory clears only the writing user's entries", async () => {
+  const day = new Date("2026-11-01T10:00:00.000Z");
+  const scopeP1U1 = searchSemanticScope({ ...scopeInputs(day), projectId: "P1", userId: "u1" });
+  const scopeP1U2 = searchSemanticScope({ ...scopeInputs(day), projectId: "P1", userId: "u2" });
+  const p1u1Simple = simpleEntry("P1", "u1", scopeP1U1);
+  const p1u2Simple = simpleEntry("P1", "u2", scopeP1U2);
+  await setInCache(p1u1Simple, RESULTS_A);
+  await setInCache(p1u2Simple, RESULTS_B);
+  await setInSemanticCache(baseEmbedding(), scopeP1U1, RESULTS_A);
+  await setInSemanticCache(baseEmbedding(), scopeP1U2, RESULTS_B);
+
+  await clearAfterMemoryWrite({ projectId: "P1", scope: "USER" }, "u1");
+
+  assert.equal(await getFromCache(p1u1Simple), null, "the writing user's simple entry goes");
+  assert.ok(await getFromCache(p1u2Simple), "another user's simple entry survives");
+  assert.equal(await getFromSemanticCache(baseEmbedding(), scopeP1U1), null, "the writing user's semantic entry goes");
+  assert.ok(await getFromSemanticCache(baseEmbedding(), scopeP1U2), "another user's semantic entry survives");
 });

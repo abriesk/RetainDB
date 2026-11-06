@@ -262,10 +262,10 @@ export async function clearCacheByPattern(pattern: string): Promise<number> {
  *
  * With a userId, only that user's own entries go: the simple entries under
  * `search:<projectId>:<userId>:` and the semantic entries whose scope carries that
- * project and that user. It stays user-only on purpose, even for a memory other users
- * can also see (a project-scope write arrives with the writing user's id): this is the
- * write's own user, and widening the clear past that is not this function's call to
- * make.
+ * project and that user. Whether a clear may reach past the writing user is not decided
+ * here: the caller (clearAfterMemoryWrite) passes the memory's scope, and a
+ * PROJECT-scope memory is shown to every user of the project, so that write clears the
+ * whole project.
  *
  * With no userId, the whole project goes - every user's simple entries under
  * `search:<projectId>:` and every semantic entry of that project - because a project
@@ -282,6 +282,11 @@ export async function clearSearchCaches(projectId: string, userId?: string): Pro
     userId ? `search:${projectId}:${userId}:` : `search:${projectId}:`
   );
 
+  // Retriever's context entries: `whisper:context:query:<projectId>:<hash>`. The key
+  // ends in a hash of the query, so it cannot show the user - these entries can only go
+  // by project, and they hold memory results whenever includeMemories is true.
+  await clearCacheByPattern(`query:${projectId}:`);
+
   // Semantic cache: it lives in this process, so walk the entries' own scopes.
   const projectPart = `projectId=${JSON.stringify(projectId)}`;
   const userPart = userId ? `userId=${JSON.stringify(userId)}` : null;
@@ -297,6 +302,27 @@ export async function clearSearchCaches(projectId: string, userId?: string): Pro
       if (idx > -1) bucketKeys.splice(idx, 1);
       if (bucketKeys.length === 0) semanticCacheIndex.delete(bucketKey);
     }
+  }
+}
+
+/**
+ * Clear the search caches a write to this memory made stale, by the memory's own scope
+ * (RF search-cache-clear): a PROJECT-scope memory is shown to every user of the
+ * project, so the whole project's caches go; any other scope clears only the writing
+ * user's entries. A cache error is logged and never fails the write.
+ */
+export async function clearAfterMemoryWrite(
+  memory: { projectId: string; scope?: string | null },
+  userId?: string | null
+): Promise<void> {
+  try {
+    if (memory.scope === "PROJECT") {
+      await clearSearchCaches(memory.projectId);
+    } else {
+      await clearSearchCaches(memory.projectId, userId || undefined);
+    }
+  } catch (error) {
+    console.warn("[MemoryWrite] Search cache clear failed (non-critical):", error);
   }
 }
 

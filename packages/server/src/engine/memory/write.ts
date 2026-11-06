@@ -5,7 +5,7 @@ import { mergeMemoryNormalizationMetadata } from "../../lib/memory-normalization
 import { addPendingOverlayEntry } from "../pending-overlay.js";
 import { enqueueMemoryEmbeddingJob } from "../queue.js";
 import { getRedisClient } from "../cache.js";
-import { clearSearchCaches } from "../cache.js";
+import { clearAfterMemoryWrite, clearSearchCaches } from "../cache.js";
 import { embedSingle } from "../embeddings.js";
 import { detectRelations, shouldInvalidateMemory } from "./relations.js";
 import type { MemoryScopeTarget, MemorySourceRole, MemoryType, PromotionMode } from "./types.js";
@@ -772,7 +772,7 @@ async function embedMemoryInline(id: string, text: string): Promise<void> {
   }
 }
 
-async function postPersistActions(memory: { id: string; content: string }, input: CanonicalMemoryWriteInput) {
+async function postPersistActions(memory: { id: string; content: string; projectId: string; scope?: string | null }, input: CanonicalMemoryWriteInput) {
   // Always use plaintext for embedding — input.content is guaranteed plaintext
   const plaintextContent = decrypt(memory.content, input.orgId);
   const embeddingText = String(buildNormalizedMetadata(input, plaintextContent).search_text || plaintextContent);
@@ -790,13 +790,10 @@ async function postPersistActions(memory: { id: string; content: string }, input
     await embedMemoryInline(memory.id, embeddingText);
   }
 
-  // Invalidate both search caches so the updated memory surfaces immediately (RF
-  // search-cache-clear). A cache error is logged and never fails the write.
-  try {
-    await clearSearchCaches(input.projectId, input.userId);
-  } catch (error) {
-    console.warn("[MemoryWrite] Search cache clear failed (non-critical):", error);
-  }
+  // Invalidate the caches this write made stale so the result surfaces immediately (RF
+  // search-cache-clear). clearAfterMemoryWrite logs a cache error and never fails the
+  // write.
+  await clearAfterMemoryWrite(memory, input.userId);
 
   if (input.publishPendingOverlay === false) return;
   if (!input.orgId) return;
@@ -918,6 +915,11 @@ export async function writeMemoryCanonical(input: CanonicalMemoryWriteInput): Pr
       scopeDecision,
       scopeTarget
     );
+    // A duplicate write still changes the stored memory's confidence, importance,
+    // entities and metadata, so a cached answer from before it is stale (RF
+    // search-cache-clear).
+    await clearAfterMemoryWrite(updated, effectiveInput.userId);
+
     return {
       outcome: "exact_duplicate",
       memory: toPersistedShape(updated),
@@ -976,14 +978,11 @@ export async function writeMemoryCanonical(input: CanonicalMemoryWriteInput): Pr
       scopeDecision,
       scopeTarget
     );
-    // The merge changes the stored text, so every cached answer that could have come
-    // from it is stale (RF search-cache-clear). A cache error is logged and never
-    // fails the write.
-    try {
-      await clearSearchCaches(effectiveInput.projectId, effectiveInput.userId);
-    } catch (error) {
-      console.warn("[MemoryWrite] Search cache clear failed (non-critical):", error);
-    }
+    // A merge changes confidence, importance, entities and metadata - not the stored
+    // text - and a cached answer shows those, so every cached answer that could have
+    // come from it is stale (RF search-cache-clear). clearAfterMemoryWrite logs a
+    // cache error and never fails the write.
+    await clearAfterMemoryWrite(merged, effectiveInput.userId);
     return {
       outcome: "merged",
       memory: toPersistedShape(merged),
