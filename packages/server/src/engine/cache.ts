@@ -485,8 +485,10 @@ function getNeighboringBuckets(embedding: number[]): string[] {
   return neighbors;
 }
 
-/** Deterministic serialization of one scope part: Dates as ISO strings, object keys
- * sorted, arrays in caller order (the caller sorts where the order must not matter). */
+/** Deterministic serialization of one scope part: Dates as ISO strings, strings
+ * JSON-quoted (so a separator character inside a value cannot imitate one), object
+ * keys sorted, arrays in caller order (the caller sorts where the order must not
+ * matter). */
 function scopePart(value: unknown): string {
   if (value === undefined) return "";
   if (value === null) return "null";
@@ -498,6 +500,9 @@ function scopePart(value: unknown): string {
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     return `{${entries.map(([k, v]) => `${k}:${scopePart(v)}`).join(",")}}`;
   }
+  // JSON-quoted: a comma, | or : inside a value can no longer look like the
+  // separators between parts (tags ["a,b"] and ["a","b"] once shared a scope).
+  if (typeof value === "string") return JSON.stringify(value);
   return String(value);
 }
 
@@ -575,6 +580,28 @@ export function searchSemanticScope(inputs: SemanticScopeInputs): string {
     disableLatencyDegradation: inputs.disableLatencyDegradation ? 1 : 0,
     questionDate: utcDay(inputs.questionDate),
   });
+}
+
+/** The simple (exact-match) search cache key for one search (RF search-cache-filters):
+ * the inputs of today's key, in today's order, with `:` + the search's semantic-cache
+ * scope appended, so the filters that scope carries (memory types, namespace, tags,
+ * include_inactive, the temporal constraint, the fast mode) now also separate simple
+ * cache entries. The key still starts with exactly `search:<projectId>:<userId>:`, the
+ * prefix engine/memory/write.ts clears with clearCacheByPattern after a write. */
+export function searchSimpleCacheKey(
+  inputs: {
+    projectId: string;
+    userId?: string | null;
+    sessionId?: string | null;
+    agentId?: string | null;
+    taskId?: string | null;
+    scopes: readonly string[];
+    query: string;
+    topK: number;
+  },
+  scope: string,
+): string {
+  return `search:${inputs.projectId}:${inputs.userId || ""}:${inputs.sessionId || ""}:${inputs.agentId || ""}:${inputs.taskId || ""}:${inputs.scopes.join(",")}:${inputs.query}:${inputs.topK}:${scope}`;
 }
 
 /**
