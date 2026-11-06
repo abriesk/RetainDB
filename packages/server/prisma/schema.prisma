@@ -77,6 +77,7 @@ model Source {
   project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
   documents Document[]
   versions  SourceVersion[]
+  syncJobs  SyncJob[]
 
   @@unique([projectId, name])
   @@index([projectId])
@@ -416,27 +417,36 @@ model SharedContext {
 // ── SyncJob ───────────────────────────────────────────────────────────────────
 
 model SyncJob {
-  id              String    @id @default(uuid())
-  sourceId        String?
-  sourceVersionId String?
-  type            String    @default("INCREMENTAL")
-  status          String    @default("PENDING")
-  progress        Int       @default(0)
-  traceId         String?
-  parentTraceId   String?
-  error           String?
-  errorMessage    String?
-  errorCode       String?
-  startedAt       DateTime?
-  finishedAt      DateTime?
-  completedAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id               String     @id @default(uuid())
+  sourceId         String
+  sourceVersionId  String?
+  type             String     @default("FULL")
+  status           String     @default("PENDING")
+  startedAt        DateTime?
+  completedAt      DateTime?
+  documentsTotal   Int        @default(0)
+  documentsIndexed Int        @default(0)
+  documentsFailed  Int        @default(0)
+  bytesProcessed   BigInt     @default(0)
+  errorMessage     String?
+  retryCount       Int        @default(0)
+  progress         Float      @default(0)
+  logs             Json       @default("[]")
+  createdAt        DateTime   @default(now())
+  partialFailure   Boolean    @default(false)
+  warningCodes     String[]   @default([])
+  errorCode        String?
+  traceId          String?
+  parentTraceId    String?
+  source           Source     @relation(fields: [sourceId], references: [id], onDelete: Cascade)
 
   @@index([sourceId])
   @@index([status])
+  @@index([type])
+  @@index([createdAt])
   @@map("sync_jobs")
 }
+
 
 // ── Ingestion ─────────────────────────────────────────────────────────────────
 
